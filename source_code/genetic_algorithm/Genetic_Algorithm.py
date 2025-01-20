@@ -14,6 +14,7 @@ import traceback
 import logging
 from collections import Counter
 path_for_car = r"C:\Users\yemoy\SEM_화물차충전소\drive-download-20241212T004036Z-001"
+path_for_car_oneday =r"C:\Users\yemoy\SEM_화물차충전소\경로폴더"
 path_for_station = r"C:\Users\yemoy\SEM_화물차충전소\station_for_simulator.csv"
 random.seed(42)
 
@@ -131,6 +132,8 @@ def fitness_func(population, station_df):
 
 
 
+
+
 def choice_gene_tournament_no_duplicate(population, tournament_size, num_parents, fitness_values):
     """
     토너먼트 선택으로 부모를 중복 없이 선택하는 함수.
@@ -165,8 +168,8 @@ def choice_gene_tournament_no_duplicate(population, tournament_size, num_parents
 def crossover_elitsm(selected_parents, num_genes, pop_size):
     """다중지점 교차를 통해 새로운 세대의 개체를 생성하는 함수."""
     crossover = []
-    elitism = selected_parents[:4]  # 상위 1개 엘리트
-    crossover.extend([parent.copy() for parent in elitism])
+    #elitism = selected_parents[:4]  # 상위 1개 엘리트
+    #crossover.extend([parent.copy() for parent in elitism])
     # 나머지 자손 생성
     while len(crossover) < pop_size:
         # 부모 4명 선택 (예: 랜덤 선택)
@@ -206,10 +209,10 @@ def crossover_elitsm(selected_parents, num_genes, pop_size):
 def mutation(crossovered,pop_size,mutation_rate,num_candi,total_chargers,adaptive_constant):
     """적응형 변이율을 적용하는 함수."""
     for i in range(pop_size):
-        if random.random()+adaptive_constant<=mutation_rate:
+        if random.random()<=mutation_rate + adaptive_constant:
             crossovered[i] = np.random.multinomial(total_chargers,[1/num_candi]*num_candi)
-            adaptive_constant += 0.001 
-            print("변이가 적용되었습니다. 변이 횟수 :  "+adaptive_constant*100)
+            #adaptive_constant -= 0.0001 
+           #print(f"변이가 적용되었습니다. 변이 횟수 : {-adaptive_constant*10000} ")
 
 
 def immigration(population, num_candi, total_chargers):
@@ -302,7 +305,7 @@ def genetic_algorithm():
         print('교차 연산 완료')
 
         # 변이
-        mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, TOTAL_CHARGERS, MUTATION_RATE)
+        mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, TOTAL_CHARGERS, 0)
         print('변이 연산 완료')
 
         # 이민자 연산
