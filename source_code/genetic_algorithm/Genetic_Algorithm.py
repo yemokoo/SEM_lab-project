@@ -28,7 +28,8 @@ NUM_CANDIDATES = 239 #충전전소 위치 후보지 개수
 NUM_SETS = 200  # 병렬로 계산할 세트 개수
 CAR_PATHS_FOLDER = 'car_paths_folder_path'  # 차량 경로 데이터 폴더 경로
 CONVERGENCE_THRESHOLD = 1e-6  # 적합도 수렴 기준
-MAX_NO_IMPROVEMENT = 10  # 개선 없는 최대 세대 수
+IMMIGRATION_THRESHOLD = 0.05  # 이민자 연산 실행 임계값
+MAX_NO_IMPROVEMENT = 7  # 개선 없는 최대 세대 수
 TOTAL_CHARGERS = 2000 #설치할 충전기의 대수
 
 duplicate_counts = []  # 중복 개체 수 저장용 리스트
@@ -212,18 +213,14 @@ def mutation(crossovered,pop_size,mutation_rate,num_candi,total_chargers,adaptiv
 
 
 def immigration(population, num_candi, total_chargers):
-    """이민자 연산을 통해 개체군 다양성을 유지하는 함수."""
+    """이민자 연산을 통해 개체군 다양성을 유지하는 함수.
+    하위 20%의 개체를 무작위로 교체한다."""
     num_to_replace = len(population) // 5  # 하위 20% 치환
     for i in range(len(population) - num_to_replace, len(population)):
         population[i] = np.random.multinomial(total_chargers, [1/num_candi] * num_candi)
     return population
 
-def should_immigrate(fitness_values):
-    """이민자 연산 실행 여부를 판단하는 함수."""
-    threshold = 0.05  # 적합도 변화가 5% 이하인 경우
-    max_fitness = max(fitness_values)
-    min_fitness = min(fitness_values)
-    return (max_fitness - min_fitness) / max_fitness < threshold
+
 
 
 def genetic_algorithm():
@@ -231,7 +228,7 @@ def genetic_algorithm():
     best_fitness = float('-inf')
     fitness_history = []
     immigration_count = 0
-    MAX_IMMIGRATIONS = 3
+    MAX_IMMIGRATIONS = 5
 
     
     # 각 세대의 전체 적합도 값 저장용 리스트
@@ -277,12 +274,20 @@ def genetic_algorithm():
 
         print(f"세대 {generation + 1}의 최고 적합도: {current_best_fitness}")
 
-        # 수렴 체크
+        # 이민자 연산용 카운트 계산 : 여기서는 범위를 넓게 잡아서 범위에 들어오면 이민자 연산을 실행함 현세대 max vs 이전 까지의 max
+        # 이민자 연산의 조건은 적합도 변화가 n% 이하인 경우가 5번 연속 발생하면 이민자 연산을 실행함
+        if abs(current_best_fitness - best_fitness) < IMMIGRATION_THRESHOLD:
+            convergence_count += 1
+        else:
+            convergence_count = 0
+
+        # 수렴 체크 // 여기서는 범위를 좁게 잡아서 범위에 들어오면 알고리즘이 종료됨됨
         if abs(current_best_fitness - best_fitness) < CONVERGENCE_THRESHOLD:
             no_improvement_count += 1
         else:
             no_improvement_count = 0
-            best_fitness = current_best_fitness
+            best_fitness = max(max_fitness_history) # 최고 적합도 갱신
+
 
         if no_improvement_count >= MAX_NO_IMPROVEMENT:
             print(f"개선이 {MAX_NO_IMPROVEMENT} 세대 동안 없었으므로 알고리즘을 종료합니다.")
@@ -301,7 +306,7 @@ def genetic_algorithm():
         print('변이 연산 완료')
 
         # 이민자 연산
-        if should_immigrate(fitness_values) and immigration_count < MAX_IMMIGRATIONS:
+        if convergence_count == 4 and immigration_count < MAX_IMMIGRATIONS:
             children = immigration(children, NUM_CANDIDATES, TOTAL_CHARGERS)
             immigration_count += 1
             print(f"이민자 연산 실행 ({immigration_count}/{MAX_IMMIGRATIONS})")
