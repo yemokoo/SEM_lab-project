@@ -52,7 +52,8 @@ class Truck:
 
         # 배터리 용량 및 초기 SOC 설정
         self.BATTERY_CAPACITY = 450  # kWh
-        self.SOC = random.randint(30, 90) # %
+       # self.SOC = random.randint(30, 90) # %
+        self.SOC = 50
 
         self.unique_id = path_df['TRIP_ID'].iloc[0]  # 트럭 고유 ID 설정
         self.CURRENT_LINK_ID = path_df['LINK_ID'].iloc[0]  # 현재 링크 ID 설정

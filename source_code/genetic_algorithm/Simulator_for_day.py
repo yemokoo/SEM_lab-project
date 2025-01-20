@@ -7,7 +7,7 @@ import gc
 from charger import Charger
 from station import Station
 from truck import Truck
-
+random.seed(42)
 class Simulator:
     """
     시뮬레이션 클래스
@@ -144,7 +144,6 @@ class Simulator:
         of = self.calculate_of()
         of = round(of/10000000, 6)
 
-        print(of)
 
         return of
 
@@ -326,8 +325,7 @@ def run_simulation(car_paths_df, station_df, unit_minutes, simulating_hours, num
     # 시뮬레이션 적합도 계산
     of = sim.analyze_results()
     
-    if of < 0:
-        of = 0
+   
 
     return of
 
@@ -412,7 +410,7 @@ if __name__ == '__main__':
     # 파일 경로 설정
     car_paths_folder = r"C:\Users\yemoy\SEM_화물차충전소\drive-download-20241212T004036Z-001"
     station_file_path = r"C:\Users\yemoy\SEM_화물차충전소\station_for_simulator - 복사본.csv"
-
+    
     simuating_hours = 30
     unit_time = 30
     number_of_trucks = 100

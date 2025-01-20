@@ -15,13 +15,13 @@ import logging
 from collections import Counter
 path_for_car = r"C:\Users\yemoy\SEM_화물차충전소\drive-download-20241212T004036Z-001"
 path_for_station = r"C:\Users\yemoy\SEM_화물차충전소\station_for_simulator.csv"
-
+random.seed(42)
 
 #100개의 솔루션 -> 토너먼트로 25개 선정 -> 25개중 상위 4개는 엘리티즘 -> 1등을 제외한 24개에 대하여 교차를 통해 96개의 해 생성  -> 100개의 다음세대 솔루션 생성.
 #해당 사항으로 우선 알고리즘이 개발되어 일단은 한 세대당 100개의 솔루션이 있음을 가정하고 시뮬레이터에 적용하길 바랍니다.
 # 유전 알고리즘 파라미터 설정
 POPULATION_SIZE = 100  # 개체군 크기
-GENERATIONS = 30  # 최대 세대 수 (필요 시 무시됨)
+GENERATIONS = 300  # 최대 세대 수 (필요 시 무시됨)
 TOURNAMENT_SIZE = 4 # 토너먼트 크기
 MUTATION_RATE = 0.1  # 변이 확률
 NUM_CANDIDATES = 239 #충전전소 위치 후보지 개수
@@ -31,6 +31,7 @@ CONVERGENCE_THRESHOLD = 1e-6  # 적합도 수렴 기준
 IMMIGRATION_THRESHOLD = 0.05  # 이민자 연산 실행 임계값
 MAX_NO_IMPROVEMENT = 7  # 개선 없는 최대 세대 수
 TOTAL_CHARGERS = 2000 #설치할 충전기의 대수
+PARENTS_SIZE = round(POPULATION_SIZE/4) #부모의 수
 
 duplicate_counts = []  # 중복 개체 수 저장용 리스트
 
@@ -58,9 +59,9 @@ def evaluate_individual(args):
         #print(f"station_df 길이: {len(station_df)}")
         
         # 시뮬레이션 파라미터
-    unit_minutes = 30
-    simulating_hours = 36
-    num_trucks = 500
+    unit_minutes = 60
+    simulating_hours = 12
+    num_trucks = 50
 
         # Ensure the length of 'individual' matches the number of rows in station_df
     if len(individual) != len(station_df):
@@ -293,7 +294,7 @@ def genetic_algorithm():
             break
 
         # 부모 선택
-        parents = choice_gene_tournament_no_duplicate(population, TOURNAMENT_SIZE, POPULATION_SIZE,fitness_values)
+        parents = choice_gene_tournament_no_duplicate(population, TOURNAMENT_SIZE, PARENTS_SIZE ,fitness_values)
         print('부모 선택 완료')
 
         # 교차
