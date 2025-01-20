@@ -164,9 +164,8 @@ def choice_gene_tournament_no_duplicate(population, tournament_size, num_parents
 def crossover_elitsm(selected_parents, num_genes, pop_size):
     """다중지점 교차를 통해 새로운 세대의 개체를 생성하는 함수."""
     crossover = []
-    elitism = selected_parents[:1]  # 상위 1개 엘리트
+    elitism = selected_parents[:4]  # 상위 1개 엘리트
     crossover.extend([parent.copy() for parent in elitism])
-    print(len(crossover))
     # 나머지 자손 생성
     while len(crossover) < pop_size:
         # 부모 4명 선택 (예: 랜덤 선택)
@@ -339,14 +338,12 @@ def genetic_algorithm():
     ax[0].plot(gens, mean_fitness_history, label='Mean Fitness', color='blue', marker='o')
     ax[0].plot(gens, fitness_history, label='Best Fitness', color='red', marker='o')
     ax[0].fill_between(gens, min_fitness_history, max_fitness_history, color='gray', alpha=0.3, label='Min-Max Range')
-    ax[0].set_yscale('log')
-    ax[0].set_ylabel('Fitness (log scale)')
+    ax[0].set_ylabel('Fitness')
     ax[0].legend()
     ax[0].grid(True)
 
     # 하단: 박스플랏으로 세대별 전체 분포 표시
     ax[1].boxplot(all_fitness_history, positions=gens)
-    ax[1].set_yscale('log')
     ax[1].set_xlabel('Generation')
     ax[1].set_ylabel('Fitness Distribution ()')
     ax[1].grid(True)
