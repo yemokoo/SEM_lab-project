@@ -22,7 +22,7 @@ random.seed(42)
 #해당 사항으로 우선 알고리즘이 개발되어 일단은 한 세대당 100개의 솔루션이 있음을 가정하고 시뮬레이터에 적용하길 바랍니다.
 # 유전 알고리즘 파라미터 설정
 POPULATION_SIZE = 100  # 개체군 크기
-GENERATIONS = 300  # 최대 세대 수 (필요 시 무시됨)
+GENERATIONS = 1000  # 최대 세대 수 (필요 시 무시됨)
 TOURNAMENT_SIZE = 4 # 토너먼트 크기
 MUTATION_RATE = 0.1  # 변이 확률
 NUM_CANDIDATES = 239 #충전전소 위치 후보지 개수
@@ -96,35 +96,38 @@ def fitness_func(population, station_df):
 
     max_retries = 3  # 최대 재시도 횟수
     retry_count = 0
-
+    print("cpu 코어 개수 : ",cpu_count())
     while retry_count < max_retries:
         try:
             results = []
-            with Pool(processes=cpu_count()) as pool:
+            with Pool(processes=cpu_count()-14) as pool:
                 # imap을 사용하여 작업 순서대로 결과 처리
                 for i, result in enumerate(
                     pool.imap(evaluate_individual, args_list), 1
                 ):
-                    results.append(result)
+                    results.append(result) # result = (index, fitness_value)
                     # 진행 상황 출력
                     if i % 10 == 0 or i == len(args_list):
                         sys.stdout.write(f"\rProcessed {i}/{len(args_list)} items")
                         sys.stdout.flush()
 
                 # 결과 정렬 (인덱스 기준)
-                results.sort(key=lambda x: x[0])
+                results.sort(key=lambda x: x[1], reverse=True) # 적합도 값이 큰 순서대로 정렬
+                sorted_indices = [x[0] for x in sorted(results, key=lambda x: x[1], reverse=True)]
+                sorted_population = [population[i] for i in sorted_indices]
                 print("\n모든 작업이 완료되었습니다.")
                 # 적합도 값 추출 및 반환
                 fitness_values = [
                     fitness if fitness is not None else -np.inf for _, fitness in results
                 ]
-                return fitness_values
+                return fitness_values, sorted_population
 
         except Exception as e:
             retry_count += 1
             logging.warning(
                 f"An error occurred: {e}. Retry attempt {retry_count}/{max_retries}."
             )
+            print("An error occurred: {e}. Retry attempt {retry_count}/{max_retries}.")
             time.sleep(5)  # 재시도 전 잠시 대기
 
     logging.error("Max retries reached. Exiting.")
@@ -183,7 +186,7 @@ def crossover_elitsm(selected_parents, num_genes, pop_size):
             parents[2][crossover_points[1]:crossover_points[2]],
             parents[3][crossover_points[2]:crossover_points[3]],
             parents[4][crossover_points[3]:crossover_points[4]],
-            parents[5][crossover_points[4]:]]).tolist()
+            parents[5][crossover_points[4]:]])
         crossover.append(child)
     
     counter = Counter(tuple(ind) for ind in crossover)
@@ -213,7 +216,7 @@ def mutation(crossovered,pop_size,mutation_rate,num_candi,total_chargers,adaptiv
             crossovered[i] = np.random.multinomial(total_chargers,[1/num_candi]*num_candi)
             #adaptive_constant -= 0.0001 
            #print(f"변이가 적용되었습니다. 변이 횟수 : {-adaptive_constant*10000} ")
-
+    return crossovered
 
 def immigration(population, num_candi, total_chargers):
     """이민자 연산을 통해 개체군 다양성을 유지하는 함수.
@@ -249,13 +252,13 @@ def genetic_algorithm():
         if generation == 0:
             population = station_gene_initial(POPULATION_SIZE, NUM_CANDIDATES, TOTAL_CHARGERS)
         else:
-            population = children
+            population = mutated
         if generation == GENERATIONS:
             print("지정된 세대의 연산이 종료되었으므로 계산 결과를 출력합니다")
             break
 
         # 적합도 계산
-        fitness_values = fitness_func(population,station_df)
+        fitness_values, sorted_population = fitness_func(population,station_df)
         print('적합도 평가 완료')
         
         # 전체 적합도 값 저장
@@ -273,7 +276,7 @@ def genetic_algorithm():
 
         # 현재 세대의 최고 적합도
         current_best_fitness = current_max
-        fitness_history.append(current_best_fitness)
+        fitness_history.append(current_best_fitness) # 최고 적합도 저장
 
         print(f"세대 {generation + 1}의 최고 적합도: {current_best_fitness}")
 
@@ -295,9 +298,15 @@ def genetic_algorithm():
         if no_improvement_count >= MAX_NO_IMPROVEMENT:
             print(f"개선이 {MAX_NO_IMPROVEMENT} 세대 동안 없었으므로 알고리즘을 종료합니다.")
             break
+        
+        # 이민자 연산
+        if convergence_count == 4 and immigration_count < MAX_IMMIGRATIONS:
+            sorted_population = immigration(sorted_population, NUM_CANDIDATES, TOTAL_CHARGERS)
+            immigration_count += 1
+            print(f"이민자 연산 실행 ({immigration_count}/{MAX_IMMIGRATIONS})")
 
         # 부모 선택
-        parents = choice_gene_tournament_no_duplicate(population, TOURNAMENT_SIZE, PARENTS_SIZE ,fitness_values)
+        parents = choice_gene_tournament_no_duplicate(sorted_population, TOURNAMENT_SIZE, PARENTS_SIZE ,fitness_values)
         print('부모 선택 완료')
 
         # 교차
@@ -305,14 +314,10 @@ def genetic_algorithm():
         print('교차 연산 완료')
 
         # 변이
-        mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, TOTAL_CHARGERS, 0)
+        mutated = mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, TOTAL_CHARGERS, 0)
         print('변이 연산 완료')
 
-        # 이민자 연산
-        if convergence_count == 4 and immigration_count < MAX_IMMIGRATIONS:
-            children = immigration(children, NUM_CANDIDATES, TOTAL_CHARGERS)
-            immigration_count += 1
-            print(f"이민자 연산 실행 ({immigration_count}/{MAX_IMMIGRATIONS})")
+        
 
     print("\n유전 알고리즘 종료")
     print(f"최종 세대 수: {generation + 1}")
