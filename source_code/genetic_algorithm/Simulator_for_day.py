@@ -1,5 +1,6 @@
 # simulator.py
 import pandas as pd
+import numpy as np
 import os
 import random
 from collections import defaultdict
@@ -8,6 +9,7 @@ from charger import Charger
 from station import Station
 from truck import Truck
 random.seed(42)
+np.random.seed(42)
 class Simulator:
     """
     시뮬레이션 클래스
