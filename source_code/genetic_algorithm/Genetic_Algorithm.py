@@ -139,40 +139,69 @@ def fitness_func(population, station_df):
 
 def choice_gene_tournament_no_duplicate(population, tournament_size, num_parents, fitness_values):
     """
-    토너먼트 선택으로 부모를 중복 없이 선택하는 함수.
-    남은 set의 수가 tournament_size보다 작다면 남은 개체만 가지고 진행한다.
+    토너먼트 선택을 사용하여 부모를 중복 없이 선택하고, 적합도(fitness)를 기준으로 내림차순 정렬하여 반환합니다.
+
+    Args:
+        population (list): 부모 개체군 리스트. 각 요소는 NumPy 배열(유전자)입니다.
+        tournament_size (int): 토너먼트 크기. 한 번에 경쟁할 후보 개체의 수입니다.
+        num_parents (int): 선택할 부모의 수입니다.
+        fitness_values (list): 각 부모 개체의 적합도(fitness)를 나타내는 리스트입니다. `population`과 같은 순서로 정렬되어 있습니다.
+
+    Returns:
+        list: 적합도(fitness)를 기준으로 내림차순 정렬된 부모 개체(NumPy 배열) 리스트를 반환합니다.
+
+    Raises:
+        ValueError: `population`의 크기가 1보다 작거나 같을 때, 또는 `tournament_size`가 `population`의 크기보다 클 때 발생합니다.
     """
+
+    # 입력 값 검증: population 크기, tournament_size 유효성 확인
     if len(population) <= 1:
         raise ValueError("Value Error: Population size must be greater than 1")
     if tournament_size > len(population):
         raise ValueError("Value Error: Tournament size cannot be greater than population size")
 
-    selected_parents = []
-    # 아직 선택되지 않은 개체의 인덱스를 관리
-    remain_indices = list(range(len(population)))
+    # 1. population과 fitness_values를 DataFrame으로 묶기
+    df = pd.DataFrame({'parent': population, 'fitness': fitness_values})
 
+    # 2. 선택된 부모와 남은 인덱스 초기화
+    selected_parents = []  # 선택된 부모를 저장할 빈 리스트
+    remain_indices = list(df.index)  # 아직 선택되지 않은 개체의 인덱스를 추적하기 위한 리스트
+
+    # 3. 토너먼트 선택을 통해 부모 선택
     while len(selected_parents) < num_parents and len(remain_indices) > 0:
-        # 남은 개체 수가 tournament_size보다 작다면 해당 개체 수만 사용
-        current_t_size = min(tournament_size, len(remain_indices))
-        # 토너먼트 참가자 후보 인덱스 선택
-        contestants_indices = random.sample(remain_indices, k=current_t_size)
-        # fitness 값이 가장 큰 인덱스 선택
-        best_index = max(contestants_indices, key=lambda i: fitness_values[i])
-        # 선택된 부모를 결과 리스트에 추가
-        selected_parents.append(population[best_index])
-        # 이미 선택된 인덱스는 다음에는 선택되지 않도록 제거
-        #for contestant in contestants_indices:
-            #remain_indices.remove(contestant)
-        remain_indices.remove(best_index)
+        # 3-1. 현재 토너먼트 크기 결정
+        current_t_size = min(tournament_size, len(remain_indices))  # 남은 인덱스가 tournament_size보다 적으면, 남은 인덱스 수를 사용
 
-    return selected_parents
+        # 3-2. 토너먼트 참가자 무작위 선택
+        contestants_indices = random.sample(remain_indices, k=current_t_size)  # remain_indices에서 current_t_size만큼 무작위로 인덱스를 선택
+
+        # 3-3. DataFrame에서 토너먼트 수행
+        contestants_df = df.loc[contestants_indices]  # 선택된 인덱스에 해당하는 행만 추출하여 새로운 DataFrame 생성
+
+        # 3-4. 토너먼트 우승자(최고 적합도) 결정
+        best_index = contestants_df['fitness'].idxmax()  # 'fitness' 열에서 최댓값을 가진 행의 인덱스를 찾음
+
+        # 3-5. 우승자를 selected_parents에 추가
+        selected_parents.append(df.loc[best_index, 'parent'])  # best_index에 해당하는 'parent' 열의 값을 selected_parents에 추가
+
+        # 3-6. 선택된 인덱스를 remain_indices에서 제거
+        remain_indices.remove(best_index)  # 선택된 인덱스는 더 이상 토너먼트에 참여하지 않도록 remain_indices에서 제거
+
+    # 4. 선택된 부모를 적합도 기준으로 내림차순 정렬
+    selected_df = df[df['parent'].isin(selected_parents)].copy()  # 선택된 부모만 포함하는 새로운 DataFrame 생성 (isin()으로 필터링)
+    selected_df.sort_values('fitness', ascending=False, inplace=True)  # 'fitness' 열을 기준으로 내림차순 정렬 (inplace=True로 자체 변경)
+
+    # 5. 정렬된 부모 리스트 반환
+    return selected_df['parent'].tolist()  # 'parent' 열만 추출하여 리스트로 변환 후 반환
 
 
-def crossover_elitsm(selected_parents, num_genes, pop_size):
+def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
     """다중지점 교차를 통해 새로운 세대의 개체를 생성하는 함수."""
+    global duplicate_info_df
     crossover = []
-    #elitism = selected_parents[:4]  # 상위 1개 엘리트
-    #crossover.extend([parent.copy() for parent in elitism])
+    
+    elitism = selected_parents[:4]
+    crossover.extend(elitism)
     # 나머지 자손 생성
     while len(crossover) < pop_size:
         # 부모 4명 선택 (예: 랜덤 선택)
@@ -189,21 +218,44 @@ def crossover_elitsm(selected_parents, num_genes, pop_size):
             parents[5][crossover_points[4]:]])
         crossover.append(child)
     
+    #총 중복 개체 수 (동일한 해가 여러 번 나온 횟수의 합)
     counter = Counter(tuple(ind) for ind in crossover)
-    
-    # 1) 총 중복 개체 수 (동일한 해가 여러 번 나온 횟수의 합)
     duplicates_count = sum((count - 1) for count in counter.values() if count > 1)
+
+    # 중복 정보 저장
     if duplicates_count > 0:
         print(f"[중복 개체 확인] 이번 세대에서 총 {duplicates_count}개의 중복 개체가 발견되었습니다.")
-        duplicate_counts.append(duplicates_count)
+        
+        # 중복 정보를 저장할 딕셔너리 생성 (이 부분이 누락되었었습니다)
+        duplicate_info = {}
+        for idx, ind in enumerate(crossover):
+            ind_tuple = tuple(ind)
+            if counter[ind_tuple] > 1:
+                if ind_tuple not in duplicate_info:
+                    duplicate_info[ind_tuple] = []
+                duplicate_info[ind_tuple].append(idx)
+
+        for solution, count in counter.items():
+            if count > 1:
+                indices = [idx for idx, ind in enumerate(crossover) if tuple(ind) == solution]
+                duplicate_info_df = pd.concat([duplicate_info_df, pd.DataFrame({
+                    'Generation': [generation + 1],
+                    'Solution': [str(solution)],
+                    'Indices': [str(indices)],
+                    'Count': [len(indices)]
+                })], ignore_index=True)
+
+        for solution, indices in duplicate_info.items():
+            print(f"개체 {solution} 이(가) {len(indices)}회 등장 (인덱스: {indices})")
+
     else:
         print("[중복 개체 확인] 이번 세대에서는 중복된 개체가 없습니다.")
-        duplicate_counts.append(0)
-    
-    # 2) 어떤 개체가 몇 번 등장했는지, 상세 목록을 보고 싶다면:
-    for solution, cnt in counter.items():
-         if cnt > 1:
-             print(f"개체 {solution} 이(가) {cnt}회 등장")
+        duplicate_info_df = pd.concat([duplicate_info_df, pd.DataFrame({
+            'Generation': [generation + 1],
+            'Solution': ['No Duplicates'],
+            'Indices': ['[]'],
+            'Count': [0]
+        })], ignore_index=True)
 
     return crossover[:pop_size]
 
