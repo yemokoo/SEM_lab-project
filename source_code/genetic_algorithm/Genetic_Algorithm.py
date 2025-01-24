@@ -61,8 +61,8 @@ def evaluate_individual(args):
         
         # 시뮬레이션 파라미터
     unit_minutes = 60
-    simulating_hours = 12
-    num_trucks = 50
+    simulating_hours = 24
+    num_trucks = 2000
 
         # Ensure the length of 'individual' matches the number of rows in station_df
     if len(individual) != len(station_df):
@@ -209,13 +209,83 @@ def crossover_elitsm(selected_parents, num_genes, pop_size):
 
     
 
-def mutation(crossovered,pop_size,mutation_rate,num_candi,total_chargers,adaptive_constant):
-    """적응형 변이율을 적용하는 함수."""
-    for i in range(pop_size):
-        if random.random()<=mutation_rate + adaptive_constant:
-            crossovered[i] = np.random.multinomial(total_chargers,[1/num_candi]*num_candi)
-            #adaptive_constant -= 0.0001 
-           #print(f"변이가 적용되었습니다. 변이 횟수 : {-adaptive_constant*10000} ")
+def mutation(crossovered, pop_size, mutation_rate, num_candi, total_chargers, adaptive_constant):
+    """
+    돌연변이 함수.
+
+    - crossovered를 DataFrame으로 변환한 후, id 열을 추가합니다.
+    - DataFrame을 사용하여 중복 개체를 관리합니다.
+    - 중복된 개체가 존재하면 중복된 개체 중 원본을 제외한 나머지 개체들에 대해 유전자를 일부 변경합니다.
+      이때, 중복 개체 수만큼 변경할 유전자 개수를 조정합니다.
+    - 중복 개체 수가 num_candi의 절반을 초과하면, 유전자 변경을 num_candi의 절반까지만 수행합니다.
+    - 중복이 없을 때는 무작위 개체에 대해 변이(전체 유전자 변경)를 수행합니다.
+    - 중복이 있을 때는 중복된 개체 중 원본을 제외한 나머지 개체에 대해서만 변이(전체 유전자 변경)를 수행합니다.
+    """
+
+    # 1. crossovered를 DataFrame으로 변환하고 ID 열 추가
+    df = pd.DataFrame(crossovered)
+    df['id'] = range(len(df))  # 새로운 ID 열 추가
+
+    # 2. 중복 개체 확인 및 ID 그룹화
+    duplicates = df.groupby(list(range(num_candi)))['id'].apply(list)
+    duplicates = duplicates[duplicates.str.len() > 1].to_dict()
+
+    unique_indices = df.groupby(list(range(num_candi)))['id'].apply(list)
+    unique_indices = unique_indices[unique_indices.str.len() == 1].to_dict()
+
+    # 중복이 없는 개체의 인덱스 리스트를 생성합니다.
+    unique_indices = [idx for indices in unique_indices.values() for idx in indices]
+
+    # 3. 중복 개체 처리
+    for ind, indices in duplicates.items():
+        num_duplicates = len(indices) - 1  # 자신(원본)을 제외한 중복 개체 수
+
+        # 원본 개체의 최댓값 찾기
+        original_genome = df.loc[df['id'] == indices[0], list(range(num_candi))].iloc[0].values
+        max_gene = np.max(original_genome)
+
+        # 3-1. 유전자 일부 변경 (중복 개체 수만큼 변경, 최대 num_candi 절반까지)
+        # 중복된 해의 일부 유전자를 무작위로 변경 (여기서 num_duplicates 사용)
+        num_genes_to_change = min(num_duplicates*5, num_candi // 2)
+
+        for i in range(1, len(indices)):  # 원본(첫 번째 인덱스)을 제외하고 나머지 중복 개체에 대해 수행
+            
+            modify_index = indices[i]
+
+            # 변경할 유전자 위치 무작위 선택
+            indices_to_change = random.sample(range(num_candi), num_genes_to_change)
+            for idx in indices_to_change:
+                # 해당 위치의 유전자를 0부터 원본 개체 최댓값 이하의 무작위 값으로 변경
+                original_value = df.loc[df['id'] == modify_index, idx].iloc[0]  # 원본 유전자 값
+                new_value = original_value
+                while new_value == original_value:
+                    new_value = np.random.randint(0, max_gene + 1)
+                df.loc[df['id'] == modify_index, idx] = new_value
+
+    # 4. 돌연변이 (전체 유전자 변경)
+
+    # 중복이 없는 경우 무작위 개체 변이
+    if not duplicates:
+        for i in range(pop_size):  # range(pop_size) 사용
+            if random.random() <= mutation_rate:
+                # unique_indices에 있는지 확인 후, 있으면 해당 인덱스 사용
+                if i in unique_indices:
+                    df.loc[df['id'] == i, list(range(num_candi))] = np.random.multinomial(total_chargers, [1/num_candi]*num_candi)
+                    print(f"돌연변이 발생 (전체 유전자 변경): 인덱스 {i}")
+
+    # 중복이 있는 경우 중복 개체 변이
+    else:
+        for indices in duplicates.values():
+            for i in indices[1:]:  # 원본 제외
+                if random.random() <= mutation_rate:
+                    df.loc[df['id'] == i, list(range(num_candi))] = np.random.multinomial(total_chargers, [1/num_candi]*num_candi)
+                    print(f"돌연변이 발생 (전체 유전자 변경): 인덱스 {i} (중복)")
+
+    # 5. 수정된 개체들을 다시 crossovered로 변환
+    crossovered = df[list(range(num_candi))].to_numpy() # id 제외 후 numpy 배열로 변환
+
+    del df # df 명시적으로 삭제
+
     return crossovered
 
 def immigration(population, num_candi, total_chargers):
