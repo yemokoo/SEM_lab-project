@@ -67,6 +67,8 @@ def evaluate_individual(args):
     unit_minutes = 60
     simulating_hours = 30
     num_trucks = 1000
+    simulating_hours = 24
+    num_trucks = 2000
 
         # Ensure the length of 'individual' matches the number of rows in station_df
     if len(individual) != len(station_df):
@@ -333,7 +335,7 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, total_chargers, ad
                     print(f"돌연변이 발생 (전체 유전자 변경): 인덱스 {i} (중복)")
 
     # 5. 수정된 개체들을 다시 crossovered로 변환
-    crossovered = df[list(range(num_candi))].values.tolist() # id 제외
+    crossovered = df[list(range(num_candi))].to_numpy() # id 제외 후 numpy 배열로 변환
 
     del df # df 명시적으로 삭제
 

@@ -1,5 +1,6 @@
 # simulator.py
 import pandas as pd
+import numpy as np
 import os
 import random
 from collections import defaultdict
@@ -11,6 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 random.seed(42)
+np.random.seed(42)
 class Simulator:
     """
     시뮬레이션 클래스
