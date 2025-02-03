@@ -8,6 +8,9 @@ import gc
 from charger import Charger
 from station import Station
 from truck import Truck
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 random.seed(42)
 np.random.seed(42)
 class Simulator:
@@ -127,13 +130,14 @@ class Simulator:
     def analyze_results(self):
         """
         시뮬레이션 결과를 분석합니다.
-        OF 값을 계산하여 반환합니다.
+        OF 값을 계산하고, 충전소별 총이익, 순이익, 비용, 충전기 당 총이익 및 순이익을 계산하여 그래프로 시각화합니다.
         """
 
         # 충전소별 정보를 DataFrame으로 저장
         station_data = pd.DataFrame([{
             'station_id': station.station_id,
-        } for station in self.stations])  # list comprehension을 이용하여 DataFrame 생성
+            'num_of_charger': station.num_of_chargers  # 충전기 개수 정보 추가
+        } for station in self.stations])
 
         self.station_results_df = station_data
 
@@ -142,13 +146,87 @@ class Simulator:
             self.truck_results_df['stopped_due_to_low_battery'] == True
         ]
 
-        # OF 값 계산
+        # OF 값 계산 (기존 함수 활용)
         of = self.calculate_of()
-        of = round(of/10000000, 6)
+        of = round(of/10000000, 6)  # OF 값을 소수점 아래 6자리까지 반올림
 
+        '''
+        print(f"OF: {of:.6f} (단위: 천만원)")  # OF 값 출력 (천만원 단위)
 
+        # 충전소별 수익, OPEX, CAPEX 계산
+        self.station_results_df['revenue'] = self.station_results_df.apply(
+            lambda row: sum(charger.rate * charger.total_charged_energy for charger in self.stations[int(row['station_id'])].chargers), axis=1
+        )
+        self.station_results_df['opex'] = self.station_results_df.apply(
+            lambda row: self.calculate_OPEX(pd.DataFrame([row])), axis=1 # calculate_OPEX 함수는 DataFrame을 인자로 받으므로, row를 DataFrame으로 변환하여 전달
+        )
+        self.station_results_df['capex'] = self.station_results_df.apply(
+            lambda row: self.calculate_CAPEX(pd.DataFrame([row])), axis=1 # calculate_CAPEX 함수는 DataFrame을 인자로 받으므로, row를 DataFrame으로 변환하여 전달
+        )
+
+        # 충전소별 총이익, 순이익 계산
+        self.station_results_df['total_profit'] = self.station_results_df['revenue']
+        self.station_results_df['net_profit'] = self.station_results_df['revenue'] - self.station_results_df['opex'] - self.station_results_df['capex'] / (365 * 5)
+
+        # 충전기 당 총이익, 순이익 계산
+        self.station_results_df['profit_per_charger'] = self.station_results_df['total_profit'] / self.station_results_df['num_of_charger']
+        self.station_results_df['net_profit_per_charger'] = self.station_results_df['net_profit'] / self.station_results_df['num_of_charger']
+
+        self.station_results_df['station_id'] = self.station_results_df['station_id'].astype(int)
+
+        # 그래프 그리기 및 저장
+        fig, axes = plt.subplots(3, 2, figsize=(18, 18))
+        fig.subplots_adjust(hspace=0.5, wspace=0.3)
+
+        # 충전소별 총이익
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='station_id', y='total_profit', data=self.station_results_df)
+        plt.title('Total Profit per Station')
+        plt.xlabel('Station ID')
+        plt.xticks([0, 50, 100, 150, 200, 250])
+        plt.tight_layout()
+        plt.savefig('total_profit_per_station.png')
+
+        # 충전소별 순이익
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='station_id', y='net_profit', data=self.station_results_df)
+        plt.title('Net Profit per Station')
+        plt.xlabel('Station ID')
+        plt.xticks([0, 50, 100, 150, 200, 250])
+        plt.tight_layout()
+        plt.savefig('net_profit_per_station.png')
+
+        # 충전소별 비용 (OPEX + 일일 CAPEX)
+        self.station_results_df['total_cost'] = self.station_results_df['opex'] + self.station_results_df['capex'] / (365 * 5)
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='station_id', y='total_cost', data=self.station_results_df)
+        plt.title('Total Cost per Station (OPEX + Daily CAPEX)')
+        plt.xlabel('Station ID')
+        plt.xticks([0, 50, 100, 150, 200, 250])
+        plt.tight_layout()
+        plt.savefig('total_cost_per_station.png')
+
+        # 충전기 당 총이익
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='station_id', y='profit_per_charger', data=self.station_results_df)
+        plt.title('Total Profit per Charger')
+        plt.xlabel('Station ID')
+        plt.xticks([0, 50, 100, 150, 200, 250])
+        plt.tight_layout()
+        plt.savefig('total_profit_per_charger.png')
+
+        # 충전기 당 순이익
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='station_id', y='net_profit_per_charger', data=self.station_results_df)
+        plt.title('Net Profit per Charger')
+        plt.xlabel('Station ID')
+        plt.xticks([0, 50, 100, 150, 200, 250])
+        plt.tight_layout()
+        plt.savefig('net_profit_per_charger.png')
+        '''
+        
         return of
-
+    
     def calculate_OPEX(self, station_df):
         """
         모든 충전소의 유지관리 비용과 총 전기 비용을 계산합니다.
@@ -193,27 +271,41 @@ class Simulator:
 
     def calculate_CAPEX(self, station_df):
         """
+    
         모든 충전소의 CAPEX를 계산합니다.
 
-        Args:
-            station_df (DataFrame): 충전소 정보 DataFrame
+         Args:
+                station_df (DataFrame): 충전소 정보 DataFrame
 
-        Returns:
+         Returns:
             float: 모든 충전소의 CAPEX 합
-        """
-        total_capex = 0
-        num_chargers = 0
+        """    
+        total_capex = 0  # 총 CAPEX 초기화
 
         for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
             station_id = int(row['station_id'])  # station_id를 정수형으로 변환
-            num_chargers +=  + self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
+            num_chargers = self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
 
-        if num_chargers >= self.number_of_max_chargers:
-           total_capex = (num_chargers - self.number_of_max_chargers) * 80000000
-           total_capex = (total_capex**2)
+            # CAPEX 계산
+            if num_chargers == 0:  # 충전기 개수가 0이면 해당 충전소 CAPEX는 0
+                station_capex = 0  # 해당 충전소의 CAPEX를 0으로 설정
+            else:
+                # CAPEX 계산 (충전기 개수가 0보다 클 때만 계산)
+                charger_cost = 80000000 * num_chargers  # 충전기 비용
+                kepco_cost = 10000000  # 한전 불입금
+                construction_cost = 200000000  # 충전소 건설 비용
+                installation_cost = 10000000 * num_chargers  # 충전기 설치 비용
 
-        return total_capex
+                station_capex = (
+                    charger_cost
+                    + kepco_cost
+                    + construction_cost
+                    + installation_cost
+                    )  # 충전소 1개의 CAPEX
 
+            total_capex += station_capex  # 총 CAPEX에 누적
+
+            return total_capex  # 모든 충전소의 CAPEX 합 반환
 
     def calculate_revenue(self, station_df):
         """
@@ -279,7 +371,7 @@ class Simulator:
         budget_excess = max(0, total_capex - 1500000000000)  # 1조 5천억 초과분
         daily_budget_excess = 2*budget_excess / (365 * 5)  # 5년 일일 예산 초과분
 
-        of = total_revenue - total_opex - total_capex - total_penalty - daily_budget_excess
+        of = total_revenue - total_opex - daily_capex - total_penalty - daily_budget_excess
 
         return of
 
@@ -327,8 +419,6 @@ def run_simulation(car_paths_df, station_df, unit_minutes, simulating_hours, num
     # 시뮬레이션 적합도 계산
     of = sim.analyze_results()
     
-   
-
     return of
 
 def load_car_path_df(car_paths_folder, number_of_trucks): 
@@ -399,7 +489,7 @@ def load_car_path_df(car_paths_folder, number_of_trucks):
 
 def load_station_df(station_file_path):
     # 충전소 데이터 로드 및 전처리
-    station_df = pd.read_csv(station_file_path, encoding = 'EUC-KR', sep=',')  # CSV 파일을 읽어와서 pandas DataFrame으로 저장
+    station_df = pd.read_csv(station_file_path, sep=',')  # CSV 파일을 읽어와서 pandas DataFrame으로 저장
 
     # 열 이름의 앞뒤 공백 제거 및 소문자로 변환
     station_df.columns = station_df.columns.str.strip()
@@ -410,12 +500,12 @@ def load_station_df(station_file_path):
 # 메인 함수 (스크립트 실행 시 호출)
 if __name__ == '__main__':
     # 파일 경로 설정
-    car_paths_folder = r"C:\Users\yemoy\SEM_화물차충전소\drive-download-20241212T004036Z-001"
-    station_file_path = r"C:\Users\yemoy\SEM_화물차충전소\station_for_simulator - 복사본.csv"
+    car_paths_folder = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\debug"
+    station_file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\station_for_simulator(debug).csv"
     
     simuating_hours = 30
-    unit_time = 30
-    number_of_trucks = 100
+    unit_time = 60
+    number_of_trucks = 1000
     number_of_charges = 2000
 
     car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks)
