@@ -305,117 +305,26 @@ class Simulator:
 
             truck_penalty += penalty  # 위약금을 총 위약금에 누적
 
-        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
-            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
-            number_of_charges += self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
-
-        if number_of_charges > self.number_of_max_chargers:
-            charger_penalty = 80000000 * (number_of_charges - self.number_of_max_chargers) # 초과 설치 페널티
-        else:
-            charger_penalty = 0
-
-        total_penalty = truck_penalty + charger_penalty
-
-        # 결과를 딕셔너리로 저장 (1개의 행)
-        results = {
-            'truck_penalty': truck_penalty,
-            'charger_penalty': charger_penalty,
-            'total_penalty': total_penalty
-        }
-
-        # 결과를 DataFrame으로 변환
-        result_df = pd.DataFrame([results])  # 딕셔너리를 리스트로 감싸서 1개의 행으로 만듦
-
-        return result_df  # 위약금 정보를 포함한 DataFrame 반환
+        return total_penalty  # 모든 트럭의 위약금 합 반환
 
     def calculate_of(self):
         """
-        OF 값을 계산하고, 충전소별 CAPEX, OPEX, REVENUE 및 페널티를 시각화합니다.
-        또한, 순이익 그래프를 추가합니다.
+        OF 값을 계산합니다.
         """
-        revenue_df = self.calculate_revenue(self.station_results_df)  # 모든 충전소의 총 수익
-        opex_df = self.calculate_OPEX(self.station_results_df)  # 모든 충전소의 OPEX
-        capex_df = self.calculate_CAPEX(self.station_results_df)  # 모든 충전소의 CAPEX
-        penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)  # 트럭 정지 페널티 및 충전기 초과 설치 페널티
+        total_revenue = self.calculate_revenue(self.station_results_df)  # 모든 충전소의 총 수익
+        total_opex = self.calculate_OPEX(self.station_results_df)  # 모든 충전소의 OPEX
+        total_capex = self.calculate_CAPEX(self.station_results_df)  # 모든 충전소의 CAPEX
+        total_penalty = self.calculate_penalty(self.failed_trucks_df)  # 모든 트럭의 위약금 합
 
-        # 각 DataFrame에서 필요한 열을 추출하고 station_id를 기준으로 병합합니다.
-        revenue_df = revenue_df[['station_id', 'revenue']]
-        opex_df = opex_df[['station_id', 'opex']]
-        capex_df = capex_df[['station_id', 'capex']]
+        daily_capex = total_capex / (365 * 5)  # 5년 일일 CAPEX
 
-        # station_id를 기준으로 DataFrame 병합
-        merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
-        merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
-        merged_df.fillna(0, inplace=True)  # 결측값은 0으로 채움
+        # 예산 초과분 계산
+        budget_excess = max(0, total_capex - 1500000000000)  # 1조 5천억 초과분
+        daily_budget_excess = 2*budget_excess / (365 * 5)  # 5년 일일 예산 초과분
 
-        # 순이익 계산
-        merged_df['net_profit'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
+        of = total_revenue - total_opex - daily_capex - total_penalty - daily_budget_excess
 
-        # 전체 합계 계산
-        revenue = merged_df['revenue'].sum()
-        opex = merged_df['opex'].sum()
-        capex = merged_df['capex'].sum()
-        total_penalty = penalty_df['total_penalty'].sum()
-        truck_penalty = penalty_df['truck_penalty'].sum()
-        charger_penalty = penalty_df['charger_penalty'].sum()
-
-        of = revenue - opex - capex - total_penalty  # OF 값 계산
-
-        # 단위 조정을 위한 나누기 연산 및 반올림 적용
-        of_rounded = round(of / 10000000, 6)
-        revenue_rounded = round(revenue / 10000000, 6)
-        opex_rounded = round(opex / 10000000, 6)
-        capex_rounded = round(capex / 10000000, 6)
-        total_penalty_rounded = round(total_penalty / 10000000, 6)
-
-        print(f"Revenue: {revenue_rounded}, OPEX: {opex_rounded}, CAPEX: {capex_rounded}, Penalty: {total_penalty_rounded}, OF: {of_rounded}")
-
-        # 그래프 그리기
-        fig, axes = plt.subplots(2, 1, figsize=(12, 12))  # 2개의 subplot 생성
-
-        # 첫 번째 그래프: CAPEX, OPEX, Revenue stacked bar chart
-        x = merged_df['station_id']
-        axes[0].bar(x, merged_df['revenue'] / 10000000, label='Revenue', color='blue')
-        axes[0].bar(x, -merged_df['opex'] / 10000000, label='OPEX', color='orange')
-        axes[0].bar(x, -merged_df['capex'] / 10000000, label='CAPEX', color='red', bottom=-merged_df['opex'] / 10000000)
-
-        # 페널티 정보 텍스트로 추가 (첫 번째 그래프 상단)
-        axes[0].text(0.95, 0.95, f"Truck Penalty: {round(truck_penalty / 10000000, 2)}",
-                    horizontalalignment='right',
-                    verticalalignment='top',
-                    transform=axes[0].transAxes)
-        axes[0].text(0.95, 0.90, f"Charger Penalty: {round(charger_penalty / 10000000, 2)}",
-                    horizontalalignment='right',
-                    verticalalignment='top',
-                    transform=axes[0].transAxes)
-
-        # 첫 번째 그래프 축 및 레이블 설정
-        axes[0].set_xlabel('Station ID')
-        axes[0].set_ylabel('Amount (10 million)')
-        axes[0].set_title('Financial Summary by Station')
-        axes[0].legend()
-        axes[0].tick_params(axis='x', rotation=45)
-
-        # 두 번째 그래프: Net Profit bar chart
-        axes[1].bar(x, merged_df['net_profit'] / 10000000, label='Net Profit', color='green')
-
-        # 두 번째 그래프 축 및 레이블 설정
-        axes[1].set_xlabel('Station ID')
-        axes[1].set_ylabel('Amount (10 million)')
-        axes[1].set_title('Net Profit by Station')
-        axes[1].legend()
-        axes[1].tick_params(axis='x', rotation=45)
-
-        plt.subplots_adjust(hspace=0.5) # 두 그래프 사이 간격 조절
-
-        # 그래프를 PNG 파일로 저장
-        file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\result.png"
-        plt.savefig(file_path)
-        print(f"Graph saved to: {file_path}")
-
-        plt.show()  # 그래프를 화면에 표시
-
-        return of_rounded
+        return of
 
     def load_stations(self, df):
         """
