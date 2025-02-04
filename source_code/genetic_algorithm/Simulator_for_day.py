@@ -149,95 +149,21 @@ class Simulator:
         # OF 값 계산 (기존 함수 활용)
         of = self.calculate_of()
         of = round(of/10000000, 6)  # OF 값을 소수점 아래 6자리까지 반올림
-
-        '''
-        print(f"OF: {of:.6f} (단위: 천만원)")  # OF 값 출력 (천만원 단위)
-
-        # 충전소별 수익, OPEX, CAPEX 계산
-        self.station_results_df['revenue'] = self.station_results_df.apply(
-            lambda row: sum(charger.rate * charger.total_charged_energy for charger in self.stations[int(row['station_id'])].chargers), axis=1
-        )
-        self.station_results_df['opex'] = self.station_results_df.apply(
-            lambda row: self.calculate_OPEX(pd.DataFrame([row])), axis=1 # calculate_OPEX 함수는 DataFrame을 인자로 받으므로, row를 DataFrame으로 변환하여 전달
-        )
-        self.station_results_df['capex'] = self.station_results_df.apply(
-            lambda row: self.calculate_CAPEX(pd.DataFrame([row])), axis=1 # calculate_CAPEX 함수는 DataFrame을 인자로 받으므로, row를 DataFrame으로 변환하여 전달
-        )
-
-        # 충전소별 총이익, 순이익 계산
-        self.station_results_df['total_profit'] = self.station_results_df['revenue']
-        self.station_results_df['net_profit'] = self.station_results_df['revenue'] - self.station_results_df['opex'] - self.station_results_df['capex'] / (365 * 5)
-
-        # 충전기 당 총이익, 순이익 계산
-        self.station_results_df['profit_per_charger'] = self.station_results_df['total_profit'] / self.station_results_df['num_of_charger']
-        self.station_results_df['net_profit_per_charger'] = self.station_results_df['net_profit'] / self.station_results_df['num_of_charger']
-
-        self.station_results_df['station_id'] = self.station_results_df['station_id'].astype(int)
-
-        # 그래프 그리기 및 저장
-        fig, axes = plt.subplots(3, 2, figsize=(18, 18))
-        fig.subplots_adjust(hspace=0.5, wspace=0.3)
-
-        # 충전소별 총이익
-        plt.figure(figsize=(12, 8))
-        sns.barplot(x='station_id', y='total_profit', data=self.station_results_df)
-        plt.title('Total Profit per Station')
-        plt.xlabel('Station ID')
-        plt.xticks([0, 50, 100, 150, 200, 250])
-        plt.tight_layout()
-        plt.savefig('total_profit_per_station.png')
-
-        # 충전소별 순이익
-        plt.figure(figsize=(12, 8))
-        sns.barplot(x='station_id', y='net_profit', data=self.station_results_df)
-        plt.title('Net Profit per Station')
-        plt.xlabel('Station ID')
-        plt.xticks([0, 50, 100, 150, 200, 250])
-        plt.tight_layout()
-        plt.savefig('net_profit_per_station.png')
-
-        # 충전소별 비용 (OPEX + 일일 CAPEX)
-        self.station_results_df['total_cost'] = self.station_results_df['opex'] + self.station_results_df['capex'] / (365 * 5)
-        plt.figure(figsize=(12, 8))
-        sns.barplot(x='station_id', y='total_cost', data=self.station_results_df)
-        plt.title('Total Cost per Station (OPEX + Daily CAPEX)')
-        plt.xlabel('Station ID')
-        plt.xticks([0, 50, 100, 150, 200, 250])
-        plt.tight_layout()
-        plt.savefig('total_cost_per_station.png')
-
-        # 충전기 당 총이익
-        plt.figure(figsize=(12, 8))
-        sns.barplot(x='station_id', y='profit_per_charger', data=self.station_results_df)
-        plt.title('Total Profit per Charger')
-        plt.xlabel('Station ID')
-        plt.xticks([0, 50, 100, 150, 200, 250])
-        plt.tight_layout()
-        plt.savefig('total_profit_per_charger.png')
-
-        # 충전기 당 순이익
-        plt.figure(figsize=(12, 8))
-        sns.barplot(x='station_id', y='net_profit_per_charger', data=self.station_results_df)
-        plt.title('Net Profit per Charger')
-        plt.xlabel('Station ID')
-        plt.xticks([0, 50, 100, 150, 200, 250])
-        plt.tight_layout()
-        plt.savefig('net_profit_per_charger.png')
-        '''
         
         return of
-    
+
+
     def calculate_OPEX(self, station_df):
         """
-        모든 충전소의 유지관리 비용과 총 전기 비용을 계산합니다.
+        모든 충전소의 유지관리 비용과 총 전기 비용을 계산하여 DataFrame으로 반환합니다.
 
         Args:
             station_df (DataFrame): 충전소 정보 DataFrame
 
         Returns:
-            float: 모든 충전소의 유지관리 비용과 총 전기 비용의 합
+            DataFrame: 충전소별 유지관리 비용, 전기 비용, 총 OPEX를 포함한 DataFrame
         """
-        total_opex = 0  # 총 OPEX 초기화
+        results = []  # 결과를 저장할 리스트
 
         for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
             station_id = int(row['station_id'])  # station_id를 정수형으로 변환
@@ -250,130 +176,246 @@ class Simulator:
             total_power = sum(
                 charger.power for charger in self.stations[station_id].chargers
             )  # 모든 충전기의 power 합산
-            basis_price = total_power * (7220 / 30) + total_charged_energy_station * (
-                137.1 + 9 + 5
+            energy_price = (total_power * (2580) + total_charged_energy_station * (
+                105 + 9 + 5)*1.132
             )  # 전기요금계: KW 당 기본 요금 + 전력량요금 + 기후환경요금 + 연료비조정액
-            total_energy_price = basis_price * (
-                1.132
-            )  # 총 전기 비용: 전기요금계 + 부가가치세 + 전력산업기반요금
+        # 총 전기 비용: 전기요금계 + 부가가치세 + 전력산업기반요금
 
-            variable_cost = self.stations[
-                station_id
-            ].num_of_chargers * (
-                33375 / 30
-            )  # 가변 비용: 충전기 당 유지 관리 비용
+            labor_cost = self.stations[station_id].num_of_chargers * (31250)  # 인건비: 충전기 당 인건비
+            maintenance_cost = self.stations[station_id].num_of_chargers * (800)  # 유지관리 비용: 충전기 당 유지 관리 비용
+            opex = (
+                labor_cost + maintenance_cost + energy_price
+            )  # 충전소의 유지관리 비용과 전기 비용
 
-            total_opex += (
-                variable_cost + total_energy_price
-            )  # 충전소의 유지관리 비용과 전기 비용을 더하여 총 OPEX에 누적
+            # 결과를 딕셔너리로 저장
+            results.append({
+                'station_id': station_id,
+                'labor_cost': labor_cost,
+                'maintenance_cost': maintenance_cost,
+                'energy_price': energy_price,
+                'opex': opex
+            })
 
-        return total_opex  # 모든 충전소의 유지관리 비용과 총 전기 비용의 합 반환
+        # 결과를 DataFrame으로 변환
+        result_df = pd.DataFrame(results)
+        return result_df  # 충전소별 유지관리 비용, 전기 비용, 총 OPEX를 포함한 DataFrame 반환
+
 
     def calculate_CAPEX(self, station_df):
         """
-    
-        모든 충전소의 CAPEX를 계산합니다.
-
-         Args:
-                station_df (DataFrame): 충전소 정보 DataFrame
-
-         Returns:
-            float: 모든 충전소의 CAPEX 합
-        """    
-        total_capex = 0  # 총 CAPEX 초기화
-
-        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
-            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
-            num_chargers = self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
-
-            # CAPEX 계산
-            if num_chargers == 0:  # 충전기 개수가 0이면 해당 충전소 CAPEX는 0
-                station_capex = 0  # 해당 충전소의 CAPEX를 0으로 설정
-            else:
-                # CAPEX 계산 (충전기 개수가 0보다 클 때만 계산)
-                charger_cost = 80000000 * num_chargers  # 충전기 비용
-                kepco_cost = 10000000  # 한전 불입금
-                construction_cost = 200000000  # 충전소 건설 비용
-                installation_cost = 10000000 * num_chargers  # 충전기 설치 비용
-
-                station_capex = (
-                    charger_cost
-                    + kepco_cost
-                    + construction_cost
-                    + installation_cost
-                    )  # 충전소 1개의 CAPEX
-
-            total_capex += station_capex  # 총 CAPEX에 누적
-
-            return total_capex  # 모든 충전소의 CAPEX 합 반환
-
-    def calculate_revenue(self, station_df):
-        """
-        모든 충전소의 충전 요금을 계산합니다.
+        모든 충전소의 CAPEX를 계산하여 DataFrame으로 반환합니다.
 
         Args:
             station_df (DataFrame): 충전소 정보 DataFrame
 
         Returns:
-            float: 모든 충전소의 총 수익
+            DataFrame: 충전소별 CAPEX 상세 내역을 포함한 DataFrame (station_id, charger_cost, kepco_cost, construction_cost, capex)
         """
-
-        station_df['revenue'] = 0.0  # revenue 열 초기화
+        results = []  # 결과를 저장할 리스트
 
         for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
             station_id = int(row['station_id'])  # station_id를 정수형으로 변환
-            income = 0  # 수익 초기화
-            for charger in self.stations[station_id].chargers:  # 충전기별 수익 계산
-                income += charger.rate * charger.total_charged_energy  # 충전기별 rate와 total_charged_energy를 곱하여 수익 계산
-            station_df.loc[idx, 'revenue'] = income  # 계산된 수익을 DataFrame에 저장
+            num_chargers = self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
+            total_charged_energy_station = sum(
+                charger.total_charged_energy for charger in self.stations[station_id].chargers
+            )
 
-        total_revenue = station_df['revenue'].sum()  # 모든 충전소의 총 수익 반환
+            # CAPEX 계산
+            if num_chargers == 0:  # 충전기 개수가 0이면 해당 충전소 CAPEX는 0
+                charger_cost = 0
+                kepco_cost = 0
+                construction_cost = 0
+                station_capex = 0
+            else:
+                # CAPEX 계산 (충전기 개수가 0보다 클 때만 계산)
+                charger_cost = 80000000 * num_chargers / (365*5)  # 충전기 비용
+                kepco_cost = 50000 * total_charged_energy_station / (365*5)   # 한전 불입금
+                construction_cost = 1868123 * 50 * num_chargers / (365*5)  # 충전소 건설 비용
+                station_capex = (
+                    charger_cost
+                    + kepco_cost
+                    + construction_cost
+                )  # 충전소 1개의 CAPEX
 
-        return total_revenue
+            # 결과를 딕셔너리로 저장
+            results.append({
+                'station_id': station_id,
+                'charger_cost': charger_cost,
+                'kepco_cost': kepco_cost,
+                'construction_cost': construction_cost,
+                'capex': station_capex
+            })
 
-    def calculate_penalty(self, failed_trucks_df):
+        # 결과를 DataFrame으로 변환
+        result_df = pd.DataFrame(results)
+        return result_df  # 충전소별 CAPEX 상세 내역을 포함한 DataFrame 반환
+
+    def calculate_revenue(self, station_df):
         """
-        배터리 부족으로 정지한 트럭들의 위약금을 계산합니다.
+        모든 충전소의 충전 요금을 계산하여 DataFrame으로 반환합니다.
+
+        Args:
+            station_df (DataFrame): 충전소 정보 DataFrame
+
+        Returns:
+            DataFrame: 충전소별 수익을 포함한 DataFrame (station_id, revenue)
+        """
+
+        results = []  # 결과를 저장할 리스트
+
+        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
+            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
+            revenue = 0  # 수익 초기화
+            for charger in self.stations[station_id].chargers:  # 충전기별 수익 계산
+                revenue += charger.rate * charger.total_charged_energy  # 충전기별 rate와 total_charged_energy를 곱하여 수익 계산
+
+            # 결과를 딕셔너리로 저장
+            results.append({
+                'station_id': station_id,
+                'revenue': revenue
+            })
+
+        # 결과를 DataFrame으로 변환
+        result_df = pd.DataFrame(results)
+
+        return result_df  # 충전소별 수익을 포함한 DataFrame 반환
+
+    def calculate_penalty(self, failed_trucks_df, station_df):
+        """
+        배터리 부족으로 정지한 트럭들의 위약금과 충전기 관련 위약금을 계산하여 DataFrame으로 반환합니다.
 
         Args:
             failed_trucks_df (DataFrame): 배터리 부족으로 정지한 트럭 정보 DataFrame
 
         Returns:
-            float: 모든 트럭의 위약금 합
+            DataFrame: 위약금 정보를 포함한 DataFrame (truck_penalty, charger_penalty, total_penalty) - 1개의 행
         """
-        total_penalty = 0  # 총 위약금 초기화
+        truck_penalty = 0  # 트럭 위약금 초기화
+        charger_penalty = 0 # 충전기 패널티 초기화
+        number_of_charges = 0 # number_of_charges 변수 추가 및 초기화
 
         for idx, row in failed_trucks_df.iterrows():  # DataFrame의 각 행을 순회
             distance = row['total_distance'] / 2  # 이동 거리의 절반을 위약금 계산에 사용
 
             # 랜덤으로 컨테이너 종류 선택
             if random.choice([True, False]):  # 50% 확률로 40FT 또는 20FT 선택
-                penalty = 136395.90 + 3221.87 * distance - 2.72 * distance**2
+                penalty = 136395.90 + 3221.87 * distance - 2.72 * distance**2 #40ft
             else:  # 20FT 컨테이너
-                penalty = 121628.18 + 2765.50 * distance - 2.00 * distance**2
+                penalty = 121628.18 + 2765.50 * distance - 2.00 * distance**2 #20ft
 
-            total_penalty += penalty  # 위약금을 총 위약금에 누적
+            truck_penalty += penalty  # 위약금을 총 위약금에 누적
 
-        return total_penalty  # 모든 트럭의 위약금 합 반환
+        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
+            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
+            number_of_charges += self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
+
+        if number_of_charges > self.number_of_max_chargers:
+            charger_penalty = 80000000 * (number_of_charges - self.number_of_max_chargers) # 초과 설치 페널티
+        else:
+            charger_penalty = 0
+
+        total_penalty = truck_penalty + charger_penalty
+
+        # 결과를 딕셔너리로 저장 (1개의 행)
+        results = {
+            'truck_penalty': truck_penalty,
+            'charger_penalty': charger_penalty,
+            'total_penalty': total_penalty
+        }
+
+        # 결과를 DataFrame으로 변환
+        result_df = pd.DataFrame([results])  # 딕셔너리를 리스트로 감싸서 1개의 행으로 만듦
+
+        return result_df  # 위약금 정보를 포함한 DataFrame 반환
 
     def calculate_of(self):
         """
-        OF 값을 계산합니다.
+        OF 값을 계산하고, 충전소별 CAPEX, OPEX, REVENUE 및 페널티를 시각화합니다.
+        또한, 순이익 그래프를 추가합니다.
         """
-        total_revenue = self.calculate_revenue(self.station_results_df)  # 모든 충전소의 총 수익
-        total_opex = self.calculate_OPEX(self.station_results_df)  # 모든 충전소의 OPEX
-        total_capex = self.calculate_CAPEX(self.station_results_df)  # 모든 충전소의 CAPEX
-        total_penalty = self.calculate_penalty(self.failed_trucks_df)  # 모든 트럭의 위약금 합
+        revenue_df = self.calculate_revenue(self.station_results_df)  # 모든 충전소의 총 수익
+        opex_df = self.calculate_OPEX(self.station_results_df)  # 모든 충전소의 OPEX
+        capex_df = self.calculate_CAPEX(self.station_results_df)  # 모든 충전소의 CAPEX
+        penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)  # 트럭 정지 페널티 및 충전기 초과 설치 페널티
 
-        daily_capex = total_capex / (365 * 5)  # 5년 일일 CAPEX
+        # 각 DataFrame에서 필요한 열을 추출하고 station_id를 기준으로 병합합니다.
+        revenue_df = revenue_df[['station_id', 'revenue']]
+        opex_df = opex_df[['station_id', 'opex']]
+        capex_df = capex_df[['station_id', 'capex']]
 
-        # 예산 초과분 계산
-        budget_excess = max(0, total_capex - 1500000000000)  # 1조 5천억 초과분
-        daily_budget_excess = 2*budget_excess / (365 * 5)  # 5년 일일 예산 초과분
+        # station_id를 기준으로 DataFrame 병합
+        merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
+        merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
+        merged_df.fillna(0, inplace=True)  # 결측값은 0으로 채움
 
-        of = total_revenue - total_opex - daily_capex - total_penalty - daily_budget_excess
+        # 순이익 계산
+        merged_df['net_profit'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
 
-        return of
+        # 전체 합계 계산
+        revenue = merged_df['revenue'].sum()
+        opex = merged_df['opex'].sum()
+        capex = merged_df['capex'].sum()
+        total_penalty = penalty_df['total_penalty'].sum()
+        truck_penalty = penalty_df['truck_penalty'].sum()
+        charger_penalty = penalty_df['charger_penalty'].sum()
+
+        of = revenue - opex - capex - total_penalty  # OF 값 계산
+
+        # 단위 조정을 위한 나누기 연산 및 반올림 적용
+        of_rounded = round(of / 10000000, 6)
+        revenue_rounded = round(revenue / 10000000, 6)
+        opex_rounded = round(opex / 10000000, 6)
+        capex_rounded = round(capex / 10000000, 6)
+        total_penalty_rounded = round(total_penalty / 10000000, 6)
+
+        print(f"Revenue: {revenue_rounded}, OPEX: {opex_rounded}, CAPEX: {capex_rounded}, Penalty: {total_penalty_rounded}, OF: {of_rounded}")
+
+        # 그래프 그리기
+        fig, axes = plt.subplots(2, 1, figsize=(12, 12))  # 2개의 subplot 생성
+
+        # 첫 번째 그래프: CAPEX, OPEX, Revenue stacked bar chart
+        x = merged_df['station_id']
+        axes[0].bar(x, merged_df['revenue'] / 10000000, label='Revenue', color='blue')
+        axes[0].bar(x, -merged_df['opex'] / 10000000, label='OPEX', color='orange')
+        axes[0].bar(x, -merged_df['capex'] / 10000000, label='CAPEX', color='red', bottom=-merged_df['opex'] / 10000000)
+
+        # 페널티 정보 텍스트로 추가 (첫 번째 그래프 상단)
+        axes[0].text(0.95, 0.95, f"Truck Penalty: {round(truck_penalty / 10000000, 2)}",
+                    horizontalalignment='right',
+                    verticalalignment='top',
+                    transform=axes[0].transAxes)
+        axes[0].text(0.95, 0.90, f"Charger Penalty: {round(charger_penalty / 10000000, 2)}",
+                    horizontalalignment='right',
+                    verticalalignment='top',
+                    transform=axes[0].transAxes)
+
+        # 첫 번째 그래프 축 및 레이블 설정
+        axes[0].set_xlabel('Station ID')
+        axes[0].set_ylabel('Amount (10 million)')
+        axes[0].set_title('Financial Summary by Station')
+        axes[0].legend()
+        axes[0].tick_params(axis='x', rotation=45)
+
+        # 두 번째 그래프: Net Profit bar chart
+        axes[1].bar(x, merged_df['net_profit'] / 10000000, label='Net Profit', color='green')
+
+        # 두 번째 그래프 축 및 레이블 설정
+        axes[1].set_xlabel('Station ID')
+        axes[1].set_ylabel('Amount (10 million)')
+        axes[1].set_title('Net Profit by Station')
+        axes[1].legend()
+        axes[1].tick_params(axis='x', rotation=45)
+
+        plt.subplots_adjust(hspace=0.5) # 두 그래프 사이 간격 조절
+
+        # 그래프를 PNG 파일로 저장
+        file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\result.png"
+        plt.savefig(file_path)
+        print(f"Graph saved to: {file_path}")
+
+        plt.show()  # 그래프를 화면에 표시
+
+        return of_rounded
 
     def load_stations(self, df):
         """
@@ -392,7 +434,7 @@ class Simulator:
 
             charger_specs = []  # 충전기 사양을 저장할 리스트
             for _ in range(num_of_chargers):  # 충전기 개수만큼 반복
-                charger_specs.append({'power': 200, 'rate': 600})  # 충전기 사양 추가 (200kW, 600원/kWh)
+                charger_specs.append({'power': 200, 'rate': 560})  # 충전기 사양 추가 (200kW, 560원/kWh)
             station = Station(  # 충전소 객체 생성
                 station_id=idx,  # 충전소 ID (행 인덱스 사용)
                 link_id=row['link_id'],  # 충전소가 위치한 링크 ID
@@ -505,8 +547,8 @@ if __name__ == '__main__':
     
     simuating_hours = 30
     unit_time = 60
-    number_of_trucks = 1000
-    number_of_charges = 2000
+    number_of_trucks = 5000
+    number_of_charges = 10000
 
     car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks)
     station_df = load_station_df(station_file_path)
