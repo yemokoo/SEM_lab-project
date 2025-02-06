@@ -51,9 +51,9 @@ class Truck:
         self.model = model
 
         # 배터리 용량 및 초기 SOC 설정
-        self.BATTERY_CAPACITY = 450  # kWh
-       # self.SOC = random.randint(30, 90) # %
-        self.SOC = 50
+        self.BATTERY_CAPACITY = 540  # kWh
+        self.SOC = random.randint(30, 90) # %
+        #self.SOC = 50
 
         self.unique_id = path_df['TRIP_ID'].iloc[0]  # 트럭 고유 ID 설정
         self.CURRENT_LINK_ID = path_df['LINK_ID'].iloc[0]  # 현재 링크 ID 설정
@@ -126,7 +126,7 @@ class Truck:
             return  # 조건에 해당하면 이동하지 않고 함수 종료
 
         # SOC가 60% 이하로 떨어지면 충전 의사 설정
-        if self.SOC <= 60:
+        if self.SOC <=  60:
             self.wants_to_charge = True
 
         # 이동할 링크 수 설정 (남은 링크가 적으면 남은 만큼 이동)
@@ -180,7 +180,7 @@ class Truck:
                     time_to_station = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[i] - \
                                     self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index]
 
-                energy_consumed_to_station = (distance_to_station / 100) * 100  # 100km 당 100kWh 소비 가정
+                energy_consumed_to_station = (distance_to_station / 100) * 180  # 100km 당 180kWh 소비 가정
 
                 # SOC 및 next_activation_time 업데이트
                 self.SOC = max(0, self.SOC - (energy_consumed_to_station / self.BATTERY_CAPACITY) * 100)
@@ -216,9 +216,9 @@ class Truck:
                     else:
                         total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[-1] - \
                                             self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index]
-                    energy_consumed_to_station = (total_distance_traveled / 100) * 100  # 100km 당 78kWh 소비 가정
+                    energy_consumed_to_station = (total_distance_traveled / 100) * 180  # 100km 당 180kWh 소비 가정
 
-                total_energy_consumed = (total_distance_traveled / 100) * 100  # 100km 당 78kWh 소비 가정
+                total_energy_consumed = (total_distance_traveled / 100) * 180  # 100km 당 180kWh 소비 가정
                 self.SOC = max(0, self.SOC - (total_energy_consumed / self.BATTERY_CAPACITY) * 100)  # SOC 업데이트
                 self.CURRENT_LINK_ID = self.NEXT_LINK_ID  # 현재 링크 ID 업데이트
                 self.current_path_index += links_to_move  # 현재 경로 인덱스 업데이트
@@ -252,7 +252,7 @@ class Truck:
                     total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[-1] - \
                                         self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index]
 
-            total_energy_consumed = (total_distance_traveled / 100) * 100  # 100km 당 100kWh 소비 가정
+            total_energy_consumed = (total_distance_traveled / 100) * 180  # 100km 당 180kWh 소비 가정
             self.SOC = max(0, self.SOC - (total_energy_consumed / self.BATTERY_CAPACITY) * 100)  # SOC 업데이트
             self.CURRENT_LINK_ID = self.NEXT_LINK_ID  # 현재 링크 ID 업데이트
             self.current_path_index += links_to_move  # 현재 경로 인덱스 업데이트

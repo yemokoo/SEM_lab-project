@@ -15,9 +15,9 @@ import logging
 from collections import Counter
 import copy
 
-path_for_car = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\analyzed_paths_for_simulator(DAY)"
-path_for_car_oneday =r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\debug"
-path_for_station = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\station_for_simulator(debug).csv"
+path_for_car = r"C:\Users\user\Desktop\화물차 충전소\resource\analyzed_paths_for_simulator(DAY)"
+path_for_car_oneday =r"C:\Users\user\Desktop\화물차 충전소\resource\analyzed_paths_for_simulator(debug)"
+path_for_station = r"C:\Users\user\Desktop\화물차 충전소\resource\candidate.csv"
 random.seed(42)
 np.random.seed(42)
 
@@ -25,16 +25,17 @@ np.random.seed(42)
 #해당 사항으로 우선 알고리즘이 개발되어 일단은 한 세대당 100개의 솔루션이 있음을 가정하고 시뮬레이터에 적용하길 바랍니다.
 # 유전 알고리즘 파라미터 설정
 POPULATION_SIZE = 100  # 개체군 크기
-GENERATIONS = 1000  # 최대 세대 수 (필요 시 무시됨)
+GENERATIONS = 2000  # 최대 세대 수 (필요 시 무시됨)
 TOURNAMENT_SIZE = 4 # 토너먼트 크기
-MUTATION_RATE = 0.05  # 변이 확률
-NUM_CANDIDATES = 239 #충전전소 위치 후보지 개수
+MUTATION_RATE = 0.01  # 변이 확률
+NUM_CANDIDATES = 500 #충전소 위치 후보지 개수
 NUM_SETS = 200  # 병렬로 계산할 세트 개수
 CAR_PATHS_FOLDER = 'car_paths_folder_path'  # 차량 경로 데이터 폴더 경로
-CONVERGENCE_THRESHOLD = 1e-6  # 적합도 수렴 기준
+CONVERGENCE_THRESHOLD = 1000000  # 적합도 수렴 기준
 IMMIGRATION_THRESHOLD = 0.05  # 이민자 연산 실행 임계값
 MAX_NO_IMPROVEMENT = 10  # 개선 없는 최대 세대 수
-TOTAL_CHARGERS = 2000 #설치할 충전기의 대수
+INITIAL_CHARGERS = 2000 # 설치할 충전기의 대수
+TOTAL_CHARGERS = 10000 # 총 충전기 대수
 PARENTS_SIZE = round(POPULATION_SIZE/2) #부모의 수
 
 # 중복 정보를 저장할 DataFrame 초기화
@@ -66,9 +67,7 @@ def evaluate_individual(args):
         # 시뮬레이션 파라미터
     unit_minutes = 60
     simulating_hours = 30
-    num_trucks = 1000
-    simulating_hours = 24
-    num_trucks = 2000
+    num_trucks = 5000
 
         # Ensure the length of 'individual' matches the number of rows in station_df
     if len(individual) != len(station_df):
@@ -89,8 +88,8 @@ def evaluate_individual(args):
 
 def fitness_func(population, station_df):
     """시뮬레이션에서 리턴되는 값들을 통해 각 솔루션의 적합도를 평가하는 함수."""
-    car_paths_folder = path_for_car_oneday  
-    car_paths_df = si.load_car_path_df(car_paths_folder, number_of_trucks=1000)
+    car_paths_folder = path_for_car  
+    car_paths_df = si.load_car_path_df(car_paths_folder, number_of_trucks=5000)
     print("차량 경로 파일 길이", len(car_paths_df))
 
     args_list = [
@@ -100,32 +99,28 @@ def fitness_func(population, station_df):
 
     max_retries = 3  # 최대 재시도 횟수
     retry_count = 0
-    print("cpu 코어 개수 : ",cpu_count())
+    #print("cpu 코어 개수 : ",cpu_count())
     while retry_count < max_retries:
         try:
             results = []
             with Pool(processes=cpu_count()) as pool:
                 # imap을 사용하여 작업 순서대로 결과 처리
-                for i, result in enumerate(
-                    pool.imap(evaluate_individual, args_list), 1
-                ):
-                    results.append(result) # result = (index, fitness_value)
-                    # 진행 상황 출력
-                    if i % 10 == 0 or i == len(args_list):
-                        sys.stdout.write(f"\rProcessed {i}/{len(args_list)} items")
-                        sys.stdout.flush()
+                results = list(pool.imap(evaluate_individual, args_list))  # 결과를 바로 리스트로 변환
 
-                # 결과 정렬 (인덱스 기준)
-                results.sort(key=lambda x: x[1], reverse=True) # 적합도 값이 큰 순서대로 정렬
-                sorted_indices = [x[0] for x in sorted(results, key=lambda x: x[1], reverse=True)]
+                # 결과 정렬 (인덱스 기준) - (인덱스, 적합도) 쌍을 유지하도록 수정
+                sorted_results = sorted(results, key=lambda x: x[1], reverse=True) # 적합도 값이 큰 순서대로 정렬
+
+                sorted_indices = [x[0] for x in sorted_results]
                 sorted_population = [population[i] for i in sorted_indices]
+
                 print("\n모든 작업이 완료되었습니다.")
-                # 적합도 값 추출 및 반환
+
+                # 적합도 값 추출 (None 처리)
                 fitness_values = [
-                    fitness if fitness is not None else -np.inf for _, fitness in results
+                    fitness if fitness is not None else -np.inf for _, fitness in sorted_results  
                 ]
                 return fitness_values, sorted_population
-
+            
         except Exception as e:
             retry_count += 1
             logging.warning(
@@ -201,14 +196,14 @@ def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
     global duplicate_info_df
     crossover = []
     
-    elitism = selected_parents[:4]
+    elitism = selected_parents[:1]
     crossover.extend(elitism)
     # 나머지 자손 생성
     while len(crossover) < pop_size:
         # 부모 4명 선택 (예: 랜덤 선택)
-        parents = random.sample(selected_parents, 6)
+        parents = random.sample(selected_parents, 10)
         
-        crossover_points =sorted(random.sample(range(1, num_genes), 5))
+        crossover_points =sorted(random.sample(range(1, num_genes), 9))
 
         child = np.concatenate([
             parents[0][:crossover_points[0]],
@@ -216,7 +211,11 @@ def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
             parents[2][crossover_points[1]:crossover_points[2]],
             parents[3][crossover_points[2]:crossover_points[3]],
             parents[4][crossover_points[3]:crossover_points[4]],
-            parents[5][crossover_points[4]:]])
+            parents[5][crossover_points[4]:crossover_points[5]],
+            parents[6][crossover_points[5]:crossover_points[6]],
+            parents[7][crossover_points[6]:crossover_points[7]],
+            parents[8][crossover_points[7]:crossover_points[8]],
+            parents[9][crossover_points[8]:]])
         crossover.append(child)
     
     #총 중복 개체 수 (동일한 해가 여러 번 나온 횟수의 합)
@@ -262,7 +261,7 @@ def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
 
     
 
-def mutation(crossovered, pop_size, mutation_rate, num_candi, total_chargers, adaptive_constant):
+def mutation(crossovered, pop_size, mutation_rate, num_candi, initial_chargers, adaptive_constant):
     """
     돌연변이 함수.
 
@@ -299,7 +298,7 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, total_chargers, ad
 
         # 3-1. 유전자 일부 변경 (중복 개체 수만큼 변경, 최대 num_candi 절반까지)
         # 중복된 해의 일부 유전자를 무작위로 변경 (여기서 num_duplicates 사용)
-        num_genes_to_change = min(num_duplicates*5, num_candi // 2)
+        num_genes_to_change = min(num_duplicates*30, num_candi // 2)
 
         for i in range(1, len(indices)):  # 원본(첫 번째 인덱스)을 제외하고 나머지 중복 개체에 대해 수행
             
@@ -312,7 +311,7 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, total_chargers, ad
                 original_value = df.loc[df['id'] == modify_index, idx].iloc[0]  # 원본 유전자 값
                 new_value = original_value
                 while new_value == original_value:
-                    new_value = np.random.randint(0, max_gene + 1)
+                    new_value = np.random.randint(0, max_gene + 7)
                 df.loc[df['id'] == modify_index, idx] = new_value
 
     # 4. 돌연변이 (전체 유전자 변경)
@@ -323,31 +322,31 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, total_chargers, ad
             if random.random() <= mutation_rate:
                 # unique_indices에 있는지 확인 후, 있으면 해당 인덱스 사용
                 if i in unique_indices:
-                    df.loc[df['id'] == i, list(range(num_candi))] = np.random.multinomial(total_chargers, [1/num_candi]*num_candi)
+                    df.loc[df['id'] == i, list(range(num_candi))] = np.random.multinomial(initial_chargers, [1/num_candi]*num_candi)
                     print(f"돌연변이 발생 (전체 유전자 변경): 인덱스 {i}")
 
     # 중복이 있는 경우 중복 개체 변이
     else:
         for indices in duplicates.values():
             for i in indices[1:]:  # 원본 제외
-                if random.random() <= mutation_rate:
-                    df.loc[df['id'] == i, list(range(num_candi))] = np.random.multinomial(total_chargers, [1/num_candi]*num_candi)
+                if random.random() <= mutation_rate*10:
+                    df.loc[df['id'] == i, list(range(num_candi))] = np.random.multinomial(initial_chargers, [1/num_candi]*num_candi)
                     print(f"돌연변이 발생 (전체 유전자 변경): 인덱스 {i} (중복)")
 
     # 5. 수정된 개체들을 다시 crossovered로 변환
-    crossovered = df[list(range(num_candi))].to_numpy() # id 제외 후 numpy 배열로 변환
+    crossovered = df[list(range(num_candi))].to_numpy() # id 제외
 
     del df # df 명시적으로 삭제
 
     return crossovered
 
 
-def immigration(population, num_candi, total_chargers):
+def immigration(population, num_candi, initial_chargers):
     """이민자 연산을 통해 개체군 다양성을 유지하는 함수.
     하위 20%의 개체를 무작위로 교체한다."""
     num_to_replace = len(population) // 5  # 하위 20% 치환
     for i in range(len(population) - num_to_replace, len(population)):
-        population[i] = np.random.multinomial(total_chargers, [1/num_candi] * num_candi)
+        population[i] = np.random.multinomial(initial_chargers, [1/num_candi] * num_candi)
     return population
 
 
@@ -375,7 +374,7 @@ def genetic_algorithm():
         print(f"\n세대 {generation + 1}/{GENERATIONS} 진행 중...")
 
         if generation == 0:
-            population = station_gene_initial(POPULATION_SIZE, NUM_CANDIDATES, TOTAL_CHARGERS)
+            population = station_gene_initial(POPULATION_SIZE, NUM_CANDIDATES, INITIAL_CHARGERS)
         else:
             population = mutated
         if generation == GENERATIONS:
@@ -405,21 +404,10 @@ def genetic_algorithm():
 
         print(f"세대 {generation + 1}의 최고 적합도: {current_best_fitness}")
 
-        # 역대 최고 개체 갱신
-        current_best_individual = sorted_population[0]  # 현재 세대 최고 개체
-        if current_best_fitness > best_fitness:
-            best_fitness = current_best_fitness
-            best_individual = current_best_individual
-            print("역대 최고 개체 갱신")
-
-        # 마지막 세대 개체 정보 저장
-        if generation == GENERATIONS - 1:
-            last_generation_individuals = sorted_population
-            print("마지막 세대 개체 정보 저장")
 
         # 이민자 연산용 카운트 계산 : 여기서는 범위를 넓게 잡아서 범위에 들어오면 이민자 연산을 실행함 현세대 max vs 이전 까지의 max
         # 이민자 연산의 조건은 적합도 변화가 n% 이하인 경우가 5번 연속 발생하면 이민자 연산을 실행함
-        if abs(current_best_fitness - best_fitness) < IMMIGRATION_THRESHOLD:
+        if abs(current_best_fitness - best_fitness) < IMMIGRATION_THRESHOLD: 
             convergence_count += 1
         else:
             convergence_count = 0
@@ -435,10 +423,22 @@ def genetic_algorithm():
         if no_improvement_count >= MAX_NO_IMPROVEMENT:
             print(f"개선이 {MAX_NO_IMPROVEMENT} 세대 동안 없었으므로 알고리즘을 종료합니다.")
             break
+
+         # 역대 최고 개체 갱신
+        current_best_individual = sorted_population[0]  # 현재 세대 최고 개체
+        if current_best_fitness > best_fitness:
+            best_fitness = current_best_fitness
+            best_individual = current_best_individual
+            print("역대 최고 개체 갱신")
+
+        # 마지막 세대 개체 정보 저장
+        if generation == GENERATIONS - 1:
+            last_generation_individuals = sorted_population
+            print("마지막 세대 개체 정보 저장")
         
         # 이민자 연산
         if convergence_count == 4 and immigration_count < MAX_IMMIGRATIONS:
-            sorted_population = immigration(sorted_population, NUM_CANDIDATES, TOTAL_CHARGERS)
+            sorted_population = immigration(sorted_population, NUM_CANDIDATES, INITIAL_CHARGERS)
             immigration_count += 1
             print(f"이민자 연산 실행 ({immigration_count}/{MAX_IMMIGRATIONS})")
 
@@ -451,8 +451,9 @@ def genetic_algorithm():
         print('교차 연산 완료')
 
         # 변이
-        mutated = mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, TOTAL_CHARGERS, 0)
+        mutated = mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, INITIAL_CHARGERS, 0)
         print('변이 연산 완료')
+        time.sleep(3) 
 
         best_fitness = max(max_fitness_history)  # 최고 적합도 갱신 (이 부분으로 이동)
 
@@ -506,12 +507,11 @@ def genetic_algorithm():
     ax[1].grid(True)
 
     plt.tight_layout()
-    plt.show()
-
+    plt.savefig('figure.png') 
 
 if __name__ == '__main__':
     # 로그 파일 경로
-    log_file_path = os.path.join(r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra", "genetic_algorithm.log")
+    log_file_path = os.path.join(r"C:\Users\user\Desktop\화물차 충전소", "genetic_algorithm.log")
 
     # 로깅 설정
     logging.basicConfig(filename=log_file_path, level=logging.INFO,
