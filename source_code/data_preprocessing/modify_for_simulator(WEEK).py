@@ -150,11 +150,14 @@ def process_csv_files(file_path, schema, batch_size=7):
             # 조건에 맞는 TRIP_ID 필터링 및 필요한 열 선택
             df = (
                 df.withColumn("last_cumulative_driving_time", last("CUMULATIVE_DRIVING_TIME_MINUTES").over(window_spec))
-                .filter(col("last_cumulative_driving_time") >= 15) # 각 그룹의 마지막 CUMULATIVE_DRIVING_TIME_MINUTES 값이 15 이상
+                .filter(col("last_cumulative_driving_time") > 3) # 각 그룹의 마지막 CUMULATIVE_DRIVING_TIME_MINUTES 값이 3min 이상
                 .drop("last_cumulative_driving_time")  # 임시 열 제거
+                .withColumn("last_cumulative_link_length", last("CUMULATIVE_LINK_LENGTH").over(window_spec))
+                .filter(col("last_cumulative_link_length") > 1) # 각 그룹의 마지막 CUMULATIVE_LINK_LENGTH 값이 1km 이상
+                .drop("last_cumulative_link_length") # 임시 열 제거
                 .groupBy("OBU_ID", "TRIP_ID")
                 .agg(count("*").alias("count"))
-                .filter(col("count") >= 10) # 각 그룹의 행 개수가 10개 이상
+                #.filter(col("count") >= 10) # 각 그룹의 행 개수가 10개 이상
                 .drop("count") # 임시 열 제거
                 .join(df, ["OBU_ID", "TRIP_ID"], "inner")  # 필터링된 TRIP_ID를 기준으로 조인
                 .drop("DATE", "DATETIME", "EMD_CODE", "emd_id", "sido_id", "sido_name", "sigungu_name", "emd_name")
