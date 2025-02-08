@@ -37,7 +37,7 @@ class Truck:
         get_info: 트럭 정보 반환
         stop: 트럭 정지
     """
-    def __init__(self, path_df, simulating_hours, link_id_to_station, model, links_to_move=20):
+    def __init__(self, path_df, simulating_hours, link_id_to_station, model, links_to_move=30):
         """
         트럭 객체를 초기화합니다.
 
@@ -46,15 +46,52 @@ class Truck:
             simulating_hours (int): 시뮬레이션 시간 (시간)
             links_to_move (int): 한 번에 이동할 링크 수 (초기값: 30)
         """
+
+        def get_starting_soc_random():    
+            initial_soc_ranges = [
+                (30, 40, 0.01),  # 1%
+                (40, 50, 0.02),  # 2%
+                (50, 60, 0.03),  # 3%
+                (60, 70, 0.04),  # 4%
+                (70, 80, 0.05),  # 5%
+                (80, 90, 0.07),  # 7%
+                (90, 100, 0.78), # 78%
+            ]
+
+            rand_val = random.random()
+            cumulative_prob = 0
+            for lower, upper, prob in initial_soc_ranges:
+                cumulative_prob += prob
+                if rand_val <= cumulative_prob:
+                    return random.randint(lower, upper)
+                
+        def get_charge_decide_soc():
+            initial_soc_ranges = [
+                (20, 30, 0.18),   # 13%
+                (30, 40, 0.18),   # 18%
+                (40, 50, 0.19),   # 19%
+                (50, 60, 0.16),   # 16%
+                (60, 70, 0.13),   # 13%
+                (70, 80, 0.10),   # 10%
+                (80, 90, 0.07)   # 5%
+            ]
+
+            rand_val = random.random()
+            cumulative_prob = 0
+            for lower, upper, prob in initial_soc_ranges:
+                cumulative_prob += prob
+                if rand_val <= cumulative_prob:
+                    return min(random.randint(lower, upper) + 20, 90)
+                
         self.path_df = path_df.reset_index(drop=True)  # 경로 데이터프레임 인덱스 초기화
         self.simulating_hours = simulating_hours  # 시뮬레이션 시간 저장
         self.model = model
 
         # 배터리 용량 및 초기 SOC 설정
         self.BATTERY_CAPACITY = 540  # kWh
-        self.SOC = random.randint(30, 90) # %
-        #self.SOC = 50
-
+        starting_soc = get_starting_soc_random()
+        self.SOC = starting_soc
+        print(f"starting SOC: {starting_soc}")
         self.unique_id = path_df['TRIP_ID'].iloc[0]  # 트럭 고유 ID 설정
         self.CURRENT_LINK_ID = path_df['LINK_ID'].iloc[0]  # 현재 링크 ID 설정
         self.NEXT_LINK_ID = None  # 다음 링크 ID 초기화
@@ -71,6 +108,9 @@ class Truck:
         self.charge_end_time = None  # 충전 종료 시간
         self.charging_time = None  # 충전 시간
         self.charge_cost = None  # 충전 비용
+        charge_decide = get_charge_decide_soc()
+        print(f"charging decide SOC: {charge_decide}")
+        self.charge_decide = charge_decide
 
         # 한 번에 이동할 링크 수 설정
         self.links_to_move = links_to_move
@@ -80,6 +120,8 @@ class Truck:
         #print(f"Truck agent created with TRIP_ID: {self.unique_id}")
 
         self.find_next_link_id()  # 다음 링크 ID 찾기
+
+
 
     def find_next_link_id(self):
         """
@@ -125,8 +167,8 @@ class Truck:
         self.waiting:
             return  # 조건에 해당하면 이동하지 않고 함수 종료
 
-        # SOC가 60% 이하로 떨어지면 충전 의사 설정
-        if self.SOC <=  60:
+        # SOC가 떨어지면 충전 의사 설정
+        if self.SOC <=  self.charge_decide:
             self.wants_to_charge = True
 
         # 이동할 링크 수 설정 (남은 링크가 적으면 남은 만큼 이동)
@@ -273,6 +315,7 @@ class Truck:
             'final_SOC': self.SOC,
             'destination_reached': self.current_path_index >= len(self.path_df) - 1,
             'stopped_due_to_low_battery': self.SOC <= 0,
+            'stopped_due_to_simulation_end' : self.model.current_time >= self.simulating_hours * 60,
             'total_distance': total_distance
         }])
 
