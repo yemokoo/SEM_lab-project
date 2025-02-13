@@ -67,13 +67,14 @@ class Truck:
                 
         def get_charge_decide_soc():
             initial_soc_ranges = [
-                (20, 30, 0.18),   # 13%
+                (10, 20, 0.05),   # 5%
+                (20, 30, 0.13),   # 13%
                 (30, 40, 0.18),   # 18%
                 (40, 50, 0.19),   # 19%
                 (50, 60, 0.16),   # 16%
                 (60, 70, 0.13),   # 13%
                 (70, 80, 0.10),   # 10%
-                (80, 90, 0.07)   # 5%
+                (80, 90, 0.07),   # 5%
             ]
 
             rand_val = random.random()
@@ -91,7 +92,7 @@ class Truck:
         self.BATTERY_CAPACITY = 540  # kWh
         starting_soc = get_starting_soc_random()
         self.SOC = starting_soc
-        print(f"starting SOC: {starting_soc}")
+        #print(f"starting SOC: {starting_soc}")
         self.unique_id = path_df['TRIP_ID'].iloc[0]  # 트럭 고유 ID 설정
         self.CURRENT_LINK_ID = path_df['LINK_ID'].iloc[0]  # 현재 링크 ID 설정
         self.NEXT_LINK_ID = None  # 다음 링크 ID 초기화
@@ -109,7 +110,7 @@ class Truck:
         self.charging_time = None  # 충전 시간
         self.charge_cost = None  # 충전 비용
         charge_decide = get_charge_decide_soc()
-        print(f"charging decide SOC: {charge_decide}")
+        #print(f"charging decide SOC: {charge_decide}")
         self.charge_decide = charge_decide
 
         # 한 번에 이동할 링크 수 설정

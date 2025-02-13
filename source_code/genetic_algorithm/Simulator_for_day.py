@@ -178,7 +178,7 @@ class Simulator:
             total_power = sum(
                 charger.power for charger in self.stations[station_id].chargers
             )  # 모든 충전기의 power 합산
-            energy_price = ((total_power * (2580) + total_charged_energy_station * (101.7 + 9 + 5))*1.132
+            energy_price = ((total_power * (2580/30) + total_charged_energy_station * (101.7 + 9 + 5))*1.132
             )  # 전기요금계: KW 당 기본 요금 + 전력량요금 + 기후환경요금 + 연료비조정액
         # 총 전기 비용: 전기요금계 + 부가가치세 + 전력산업기반요금
 
@@ -217,9 +217,6 @@ class Simulator:
         for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
             station_id = int(row['station_id'])  # station_id를 정수형으로 변환
             num_chargers = self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
-            total_charged_energy_station = sum(
-                charger.total_charged_energy for charger in self.stations[station_id].chargers
-            )
 
             # CAPEX 계산
             if num_chargers == 0:  # 충전기 개수가 0이면 해당 충전소 CAPEX는 0
@@ -229,8 +226,8 @@ class Simulator:
                 station_capex = 0
             else:
                 # CAPEX 계산 (충전기 개수가 0보다 클 때만 계산)
-                charger_cost = ((80000000-40000000) * num_chargers) / (365*5)   # 충전기 비용
-                kepco_cost = 50000 * total_charged_energy_station / (365*5)   # 한전 불입금
+                charger_cost = ((80000000) * num_chargers) / (365*5)   # 충전기 비용
+                kepco_cost = 50000 * num_chargers * 200 / (365*5)   # 한전 불입금
                 construction_cost = 1868123 * 50 * num_chargers / (365*5)  # 충전소 건설 비용
                 station_capex = (
                     charger_cost
@@ -501,7 +498,7 @@ def load_station_df(station_file_path):
 if __name__ == '__main__':
     # 파일 경로 설정
     car_paths_folder = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\analyzed_paths_for_simulator(DAY)"
-    station_file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\station_for_simulator.csv"
+    station_file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\candidate(debug).csv"
     
     simuating_hours = 30
     unit_time = 60

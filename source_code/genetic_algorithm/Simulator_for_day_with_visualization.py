@@ -178,7 +178,7 @@ class Simulator:
             total_power = sum(
                 charger.power for charger in self.stations[station_id].chargers
             )  # 모든 충전기의 power 합산
-            energy_price = ((total_power * (2580) + total_charged_energy_station * (101.7 + 9 + 5))*1.132
+            energy_price = ((total_power * (2580/30) + total_charged_energy_station * (101.7 + 9 + 5))*1.132
             )  # 전기요금계: KW 당 기본 요금 + 전력량요금 + 기후환경요금 + 연료비조정액
         # 총 전기 비용: 전기요금계 + 부가가치세 + 전력산업기반요금
 
@@ -217,9 +217,11 @@ class Simulator:
         for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
             station_id = int(row['station_id'])  # station_id를 정수형으로 변환
             num_chargers = self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
-            total_charged_energy_station = sum(
-                charger.total_charged_energy for charger in self.stations[station_id].chargers
+            total_power_station = sum(
+                charger.power for charger in self.stations[station_id].chargers
             )
+
+
 
             # CAPEX 계산
             if num_chargers == 0:  # 충전기 개수가 0이면 해당 충전소 CAPEX는 0
@@ -230,7 +232,7 @@ class Simulator:
             else:
                 # CAPEX 계산 (충전기 개수가 0보다 클 때만 계산)
                 charger_cost = ((80000000-40000000) * num_chargers) / (365*5)   # 충전기 비용
-                kepco_cost = 50000 * total_charged_energy_station / (365*5)   # 한전 불입금
+                kepco_cost = 50000 * total_power_station / (365*5)   # 한전 불입금
                 construction_cost = 1868123 * 50 * num_chargers / (365*5)  # 충전소 건설 비용
                 station_capex = (
                     charger_cost
@@ -281,6 +283,54 @@ class Simulator:
 
         return result_df  # 충전소별 수익을 포함한 DataFrame 반환
 
+    def calculate_penalty(self, failed_trucks_df, station_df):
+        """
+        배터리 부족으로 정지한 트럭들의 위약금과 충전기 관련 위약금을 계산하여 DataFrame으로 반환합니다.
+
+        Args:
+            failed_trucks_df (DataFrame): 배터리 부족으로 정지한 트럭 정보 DataFrame
+
+        Returns:
+            DataFrame: 위약금 정보를 포함한 DataFrame (truck_penalty, charger_penalty, total_penalty) - 1개의 행
+        """
+        truck_penalty = 0  # 트럭 위약금 초기화
+        charger_penalty = 0 # 충전기 패널티 초기화
+        number_of_charges = 0 # number_of_charges 변수 추가 및 초기화
+
+        for idx, row in failed_trucks_df.iterrows():  # DataFrame의 각 행을 순회
+            distance = row['total_distance'] / 2  # 이동 거리의 절반을 위약금 계산에 사용
+
+            # 랜덤으로 컨테이너 종류 선택
+            if random.choice([True, False]):  # 50% 확률로 40FT 또는 20FT 선택
+                penalty = 136395.90 + 3221.87 * distance - 2.72 * distance**2 #40ft
+            else:  # 20FT 컨테이너
+                penalty = 121628.18 + 2765.50 * distance - 2.00 * distance**2 #20ft
+
+            truck_penalty += penalty  # 위약금을 총 위약금에 누적
+
+        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
+            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
+            number_of_charges += self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
+
+        if number_of_charges > self.number_of_max_chargers:
+            charger_penalty = 80000000 * (number_of_charges - self.number_of_max_chargers) # 초과 설치 페널티
+        else:
+            charger_penalty = 0
+
+        total_penalty = truck_penalty + charger_penalty
+
+        # 결과를 딕셔너리로 저장 (1개의 행)
+        results = {
+            'truck_penalty': truck_penalty,
+            'charger_penalty': charger_penalty,
+            'total_penalty': total_penalty
+        }
+
+        # 결과를 DataFrame으로 변환
+        result_df = pd.DataFrame([results])  # 딕셔너리를 리스트로 감싸서 1개의 행으로 만듦
+
+        return result_df  # 위약금 정보를 포함한 DataFrame 반환
+
     def calculate_of(self):
         """
         OF 값을 계산하고, 충전소별 CAPEX, OPEX, REVENUE 및 페널티를 시각화합니다.
@@ -291,17 +341,13 @@ class Simulator:
         capex_df = self.calculate_CAPEX(self.station_results_df)  # 모든 충전소의 CAPEX
         penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)  # 트럭 정지 페널티 및 충전기 초과 설치 페널티
 
-        # 각 DataFrame에서 필요한 열을 추출하고 station_id를 기준으로 병합합니다.
-        revenue_df = revenue_df[['station_id', 'revenue']]
-        opex_df = opex_df[['station_id', 'opex']]
-        capex_df = capex_df[['station_id', 'capex']]
 
-        # station_id를 기준으로 DataFrame 병합
-        merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
-        merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
+        # 모든 DataFrame을 station_id를 기준으로 병합
+        merged_df = revenue_df.merge(opex_df, on='station_id', how='outer') \
+                             .merge(capex_df, on='station_id', how='outer')
+        # 필요한 모든 DataFrame을 가져온 후, 한 번에 병합
+
         merged_df.fillna(0, inplace=True)  # 결측값은 0으로 채움
-
-        
 
         # 순이익 계산
         merged_df['net_profit'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
@@ -317,61 +363,74 @@ class Simulator:
         revenue = round(revenue)
         opex = round(opex)
         capex = round(capex)
-        total_penalty = round(total_penalty) 
+        total_penalty = round(total_penalty)
         truck_penalty = round(truck_penalty)
         charger_penalty = round(charger_penalty)
 
         of = revenue - opex - capex - total_penalty  # OF 값 계산
 
         of = round(of)
-        
+
         print(f"Revenue: {revenue}, OPEX: {opex}, CAPEX: {capex}, Penalty: {total_penalty}, OF: {of}")
 
-                # 그래프 그리기
-        fig, axes = plt.subplots(2, 1, figsize=(12, 12))  # 2개의 subplot 생성
+        # merged_df를 CSV 파일로 저장
+        merged_df_filepath = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\merged_data.csv"
+        merged_df.to_csv(merged_df_filepath, index=False)  # index=False로 설정하여 인덱스 열은 저장하지 않음
+        print(f"Merged data saved to: {merged_df_filepath}")
+
+        # 그래프 그리기 (각 그래프를 별도의 파일로 저장)
+        x = merged_df['station_id']
 
         # 첫 번째 그래프: CAPEX, OPEX, Revenue stacked bar chart
-        x = merged_df['station_id']
-        axes[0].bar(x, merged_df['revenue'], label='Revenue', color='blue')
-        axes[0].bar(x, -merged_df['opex'], label='OPEX', color='orange')
-        axes[0].bar(x, -merged_df['capex'], label='CAPEX', color='red', bottom=-merged_df['opex'])
+        plt.figure(figsize=(12, 6))  # Figure 크기 설정
+        plt.bar(x, merged_df['revenue'], label='Revenue', color='blue')
+        plt.bar(x, -merged_df['opex'], label='OPEX', color='orange')
+        plt.bar(x, -merged_df['capex'], label='CAPEX', color='red', bottom=-merged_df['opex'])
 
         # 페널티 정보 텍스트로 추가 (첫 번째 그래프 상단)
-        axes[0].text(0.95, 0.95, f"Truck Penalty: {truck_penalty}",
-                    horizontalalignment='right',
-                    verticalalignment='top',
-                    transform=axes[0].transAxes)
-        axes[0].text(0.95, 0.90, f"Charger Penalty: {charger_penalty}",
-                    horizontalalignment='right',
-                    verticalalignment='top',
-                    transform=axes[0].transAxes)
+        plt.text(0.95, 0.95, f"Truck Penalty: {truck_penalty}",
+                 horizontalalignment='right',
+                 verticalalignment='top',
+                 transform=plt.gca().transAxes)  # 현재 axes의 좌표계를 사용
+        plt.text(0.95, 0.90, f"Charger Penalty: {charger_penalty}",
+                 horizontalalignment='right',
+                 verticalalignment='top',
+                 transform=plt.gca().transAxes) # 현재 axes의 좌표계를 사용
 
         # 첫 번째 그래프 축 및 레이블 설정
-        axes[0].set_xlabel('Station ID')
-        axes[0].set_ylabel('Amount (10 million)')
-        axes[0].set_title('Financial Summary by Station')
-        axes[0].legend()
-        axes[0].tick_params(axis='x', rotation=45)
+        plt.xlabel('Station ID')
+        plt.ylabel('Amount (10 million)')
+        plt.title('Financial Summary by Station')
+        plt.legend()
+        plt.xticks(rotation=45)
+        plt.tight_layout() # 레이아웃 조정
+
+        # 첫 번째 그래프를 PNG 파일로 저장
+        file_path1 = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\result_financial_summary.png"
+        plt.savefig(file_path1)
+        print(f"Financial Summary graph saved to: {file_path1}")
+        plt.close()  # 현재 Figure 닫기
+
 
         # 두 번째 그래프: Net Profit bar chart
-        axes[1].bar(x, merged_df['net_profit'] , label='Net Profit', color='green')
+        plt.figure(figsize=(12, 6)) # Figure 크기 설정
+        plt.bar(x, merged_df['net_profit'], label='Net Profit', color='green')
 
         # 두 번째 그래프 축 및 레이블 설정
-        axes[1].set_xlabel('Station ID')
-        axes[1].set_ylabel('Amount (10 million)')
-        axes[1].set_title('Net Profit by Station')
-        axes[1].legend()
-        axes[1].tick_params(axis='x', rotation=45)
+        plt.xlabel('Station ID')
+        plt.ylabel('Amount (10 million)')
+        plt.title('Net Profit by Station')
+        plt.legend()
+        plt.xticks(rotation=45)
+        plt.tight_layout() # 레이아웃 조정
 
-        plt.subplots_adjust(hspace=0.5) # 두 그래프 사이 간격 조절
 
-        # 그래프를 PNG 파일로 저장
-        file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\result.png"
-        plt.savefig(file_path)
-        print(f"Graph saved to: {file_path}")
+        # 두 번째 그래프를 PNG 파일로 저장
+        file_path2 = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\result_net_profit.png"
+        plt.savefig(file_path2)
+        print(f"Net Profit graph saved to: {file_path2}")
+        plt.close() # 현재 Figure 닫기
 
-        plt.show()  # 그래프를 화면에 표시
-        
         return of
 
     def load_stations(self, df):
@@ -499,13 +558,13 @@ def load_station_df(station_file_path):
 # 메인 함수 (스크립트 실행 시 호출)
 if __name__ == '__main__':
     # 파일 경로 설정
-    car_paths_folder = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\analyzed_paths_for_simulator(DAY)"
-    station_file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\station_for_simulator(debug).csv"
+    car_paths_folder = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\analyzed_paths_for_simulator(DEBUG)"
+    station_file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\candidate(debug).csv"
     
     simuating_hours = 30
     unit_time = 60
-    number_of_trucks = 5000
-    number_of_charges = 2000
+    number_of_trucks = 5863
+    number_of_charges = 10000
 
     car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks)
     station_df = load_station_df(station_file_path)

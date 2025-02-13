@@ -276,38 +276,6 @@ def combine_candidate_dataframes(merged_candidate_df, link_centroids_file_path, 
     final_result_df.to_csv(r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\candidate(detail).csv", index=False)
     return final_result_df
 
-def visualize_candidate_selection(candidate_df, title, link_centroids_file_path, filename, output_dir): # output_dir parameter 추가
-    """
-    후보지 선정 결과를 한국 지도 위에 시각화하는 함수 (EPSG:3857 좌표계 - Web Mercator)
-    """
-    link_centroids_df = pd.read_csv(link_centroids_file_path)
-    merged_df = pd.merge(candidate_df, link_centroids_df, on='LINK_ID', how='inner')
-
-    # matplotlib 설정
-    plt.figure(figsize=(10, 12))
-    ax = plt.axes(projection=ccrs.epsg(3857)) # Using EPSG:3857 (Web Mercator)
-
-    # 한국 지도 배경 (extent for South Korea -  APPROXIMATE in Web Mercator)
-    # Extent is roughly set to cover South Korea, you might need to fine-tune this for EPSG:3857
-    ax.set_extent([14000000, 14800000, 4000000, 4600000], crs=ccrs.epsg(3857)) # Approximate extent in EPSG:3857 - ADJUST IF NEEDED
-    ax.add_feature(cfeature.BORDERS.with_scale('10m'), linewidth=0.5, edgecolor='black')
-    ax.add_feature(cfeature.COASTLINE.with_scale('10m'), linewidth=0.5, edgecolor='black')
-
-    # 후보지 위치 산점도 (transform from Lat/Lon (PlateCarree) to Web Mercator)
-    ax.scatter(merged_df['centroid_x'], merged_df['centroid_y'], transform=ccrs.PlateCarree(), s=10, label='Candidates') # Assuming centroid_x, centroid_y are in Lat/Lon (WGS 84)
-
-    # 제목 및 라벨
-    plt.title(title)
-    plt.xlabel('X (EPSG:3857 - Web Mercator)') # Label updated to EPSG:3857
-    plt.ylabel('Y (EPSG:3857 - Web Mercator)')  # Label updated to EPSG:3857
-    plt.legend()
-
-    # 저장
-    output_path = os.path.join(output_dir, filename) # output_dir와 filename을 결합하여 저장 경로 생성
-    plt.savefig(output_path)
-    plt.close()
-    print(f"Visualization saved to {output_path}")
-
 if __name__ == '__main__':
 
     # 각 함수 실행
