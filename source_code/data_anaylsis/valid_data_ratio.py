@@ -23,7 +23,7 @@ spark = (
 )
 
 # 파일 경로 설정 (일 단위)
-file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\analyzed_paths_for_simulator(DAY)\*"
+file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\analyzed_paths_for_simulator(DAY)\*" # 이 때 사용하는 경로 파일은 60km 필터링이 수행되지 않는 경로파일
 output_dir = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis"  # 출력 디렉토리
 output_filename = "vaild_path_ratio.csv"  # 출력 파일 이름
 

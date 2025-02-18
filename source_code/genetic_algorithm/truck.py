@@ -74,7 +74,8 @@ class Truck:
                 (50, 60, 0.16),   # 16%
                 (60, 70, 0.13),   # 13%
                 (70, 80, 0.10),   # 10%
-                (80, 90, 0.07),   # 5%
+                (80, 90, 0.05),   # 5%
+                (90, 100, 0.02),   # 5%
             ]
 
             rand_val = random.random()
@@ -82,7 +83,7 @@ class Truck:
             for lower, upper, prob in initial_soc_ranges:
                 cumulative_prob += prob
                 if rand_val <= cumulative_prob:
-                    return min(random.randint(lower, upper) + 20, 90)
+                    return min(random.randint(lower, upper)+5, 95)
                 
         self.path_df = path_df.reset_index(drop=True)  # 경로 데이터프레임 인덱스 초기화
         self.simulating_hours = simulating_hours  # 시뮬레이션 시간 저장
@@ -157,7 +158,7 @@ class Truck:
         """
 
         # 정지 조건 확인
-        if self.SOC <= 0 or self.current_path_index >= len(self.path_df) - 1 or current_time >= self.simulating_hours * 60:  
+        if self.current_path_index >= len(self.path_df) - 1 or current_time >= self.simulating_hours * 60:  
             self.stop()  # 트럭 정지
             return  # 정지 조건에 해당하면 함수 종료
 
@@ -167,6 +168,11 @@ class Truck:
         self.is_charging or \
         self.waiting:
             return  # 조건에 해당하면 이동하지 않고 함수 종료
+        
+        if self.SOC <= 0:
+            self.stop()
+            return
+
 
         # SOC가 떨어지면 충전 의사 설정
         if self.SOC <=  self.charge_decide:

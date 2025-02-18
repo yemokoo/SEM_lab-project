@@ -474,7 +474,7 @@ def load_car_path_df(car_paths_folder, number_of_trucks):
     for area_id, paths in area_paths.items():
         # map 함수를 사용하여 경로 복사 및 TRIP_ID 수정
         processed_paths = list(map(lambda path: path.copy().assign(TRIP_ID=path['TRIP_ID'].astype(str) + "_AREA"), 
-                                   paths[:int(number_of_trucks * 0.01)]))
+                                   paths[:int(number_of_trucks * 0.001)]))
         area_selected_groups.extend(processed_paths)
 
     selected_groups.extend(area_selected_groups)
@@ -502,7 +502,7 @@ if __name__ == '__main__':
     
     simuating_hours = 30
     unit_time = 60
-    number_of_trucks = 5863
+    number_of_trucks = 7062
     number_of_charges = 2000
 
     car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks)

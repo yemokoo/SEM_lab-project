@@ -231,7 +231,7 @@ class Simulator:
                 station_capex = 0
             else:
                 # CAPEX 계산 (충전기 개수가 0보다 클 때만 계산)
-                charger_cost = ((80000000-40000000) * num_chargers) / (365*5)   # 충전기 비용
+                charger_cost = ((80000000) * num_chargers) / (365*5)   # 충전기 비용
                 kepco_cost = 50000 * total_power_station / (365*5)   # 한전 불입금
                 construction_cost = 1868123 * 50 * num_chargers / (365*5)  # 충전소 건설 비용
                 station_capex = (
@@ -535,7 +535,7 @@ def load_car_path_df(car_paths_folder, number_of_trucks):
     for area_id, paths in area_paths.items():
         # map 함수를 사용하여 경로 복사 및 TRIP_ID 수정
         processed_paths = list(map(lambda path: path.copy().assign(TRIP_ID=path['TRIP_ID'].astype(str) + "_AREA"), 
-                                   paths[:int(number_of_trucks * 0.01)]))
+                                   paths[:int(number_of_trucks * 0.005)]))
         area_selected_groups.extend(processed_paths)
 
     selected_groups.extend(area_selected_groups)
@@ -563,7 +563,7 @@ if __name__ == '__main__':
     
     simuating_hours = 30
     unit_time = 60
-    number_of_trucks = 5863
+    number_of_trucks = 7062
     number_of_charges = 10000
 
     car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks)
