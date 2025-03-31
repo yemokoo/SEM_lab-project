@@ -122,23 +122,19 @@ def process_csv_files(file_path, schema):
             )
 
             # 3-7. 행정구역 및 지역 ID 데이터 조인 (기존 코드와 동일)
-            admin_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\resource\광역자치단체 지도\LINK_ID_DATASET.csv"
+            admin_path = r"C:\Users\wngud\Desktop\project\HDT_EVCS_Opt\Data\Raw_Data\Metropolitan area\LINK_ID_DATASET.csv"
             admin_schema = StructType([
                 StructField("sido_id", IntegerType(), True),
                 StructField("sigungu_id", IntegerType(), True),
-                StructField("emd_id", IntegerType(), True),
-                StructField("sido_name", StringType(), True),
-                StructField("sigungu_name", StringType(), True),
-                StructField("emd_name", StringType(), True)
+                StructField("emd_id", IntegerType(), True)
             ])
             admin_df = spark.read.csv(admin_path, header=True, schema=admin_schema)
             admin_df = admin_df.withColumn("SIGUNGU_ID", substring(col("sigungu_id").cast("string"), 1, 4))
 
-            area_csv_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\resource\도시 권역\AREA_ID_DATASET.csv"
+            area_csv_path = r"C:\Users\wngud\Desktop\project\HDT_EVCS_Opt\Data\Raw_Data\Metropolitan area\AREA_ID_DATASET.csv"
             area_schema = StructType([
                 StructField("AREA_ID", IntegerType(), True),
-                StructField("SIGUNGU_ID", StringType(), True),
-                StructField("SIGUNGU_NAME", StringType(), True)
+                StructField("SIGUNGU_ID", StringType(), True)
             ])
             area_df = spark.read.csv(area_csv_path, header=True, schema=area_schema)
 
@@ -159,7 +155,7 @@ def process_csv_files(file_path, schema):
                 #.filter(col("count") >= 10) # 각 그룹의 행 개수가 10개 이상
                 .drop("count") # 임시 열 제거
                 .join(df, ["OBU_ID", "TRIP_ID"], "inner")  # 필터링된 TRIP_ID를 기준으로 조인
-                .drop("DATE", "DATETIME", "EMD_CODE", "emd_id", "sido_id", "sido_name", "sigungu_name", "emd_name")
+                .drop("DATE", "DATETIME", "EMD_CODE", "emd_id", "sido_id")
                 .withColumnRenamed("COMBINED_DATETIME", "DATETIME")
                 .select("OBU_ID", "TRIP_ID", "DATETIME", "LINK_ID", "LINK_LENGTH", "DRIVING_TIME_MINUTES", "CUMULATIVE_DRIVING_TIME_MINUTES", "CUMULATIVE_LINK_LENGTH", admin_df["sigungu_id"], "AREA_ID")
             )
@@ -167,7 +163,7 @@ def process_csv_files(file_path, schema):
             df.orderBy("OBU_ID", "TRIP_ID", "DATETIME")
 
             # 3-9. 파일 내용 처리 및 저장 (파티션 개수를 10개로 줄여서 저장)
-            output_path = f"C:/Users/wngud/Desktop/project/heavy_duty_truck_charging_infra/data analysis/analyzed_paths_for_simulator(DAY)/{output_date}" # output_date 사용
+            output_path = f"C:\Users\wngud\Desktop\project\HDT_EVCS_Opt\Data\Processed_Data\simulator\Trajectory(DAY){output_date}" # output_date 사용
             df.coalesce(10).write.csv(output_path, header=True, mode="overwrite")
             print(f"Saved {output_date} data to {output_path}")
 
@@ -177,5 +173,5 @@ def process_csv_files(file_path, schema):
             print(e)
 
 # 4. 함수 호출
-file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\resource\트럭 이동 경로\*.csv"
+file_path = r"C:\Users\wngud\Desktop\project\HDT_EVCS_Opt\Data\Raw_Data\Trajectory*.csv"
 process_csv_files(file_path, schema) 
