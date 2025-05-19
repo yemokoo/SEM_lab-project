@@ -1,355 +1,402 @@
-# truck.py
 import random
 import pandas as pd
+import warnings
+import numpy as np
+import gc
+import time
+
+warnings.filterwarnings(
+    "ignore",
+    message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.",
+    category=FutureWarning
+)
 
 class Truck:
     """
-    트럭 클래스입니다. MESA Agent 클래스를 상속받아 전기 트럭의 속성과 동작을 정의합니다.
-
-    Attributes:
-        unique_id (int): 트럭의 고유 ID (TRIP_ID)
-        path_df (DataFrame): 트럭의 경로 정보를 담은 데이터프레임
-        simulating_hours (int): 시뮬레이션 시간 (시간)
-        BATTERY_CAPACITY (float): 배터리 용량 (kWh) (초기값: 400)
-        SOC (float): 배터리 잔량 (%) (초기값: 50 ~ 90)
-        CURRENT_LINK_ID (int): 트럭의 현재 링크 ID
-        NEXT_LINK_ID (int): 트럭의 다음 링크 ID
-        current_path_index (int): 현재 경로 인덱스 (초기값: 0)
-        next_activation_time (float): 다음 활성화 시간 (분)
-        is_charging (bool): 충전 중 여부 (초기값: False)
-        waiting (bool): 충전 대기 중 여부 (초기값: False)
-        wants_to_charge (bool): 충전 의사 여부 (초기값: False)
-        charging_station_id (int): 충전 중인 충전소 ID
-        charger_id (int): 충전 중인 충전기 ID
-        charge_start_time (float): 충전 시작 시간
-        charge_end_time (float): 충전 종료 시간
-        charging_time (float): 충전 시간
-        charge_cost (float): 충전 비용
-        charging_history (list): 충전 이력 리스트
-        links_to_move (int): 한 번에 이동할 링크 수
-
-    Methods:
-        __init__: 트럭 객체 초기화
-        find_next_link_id: 다음 링크 ID 찾기
-        move: 트럭 이동
-        update_soc: SOC 업데이트
-        step: 스텝 함수 (매 스텝마다 실행)
-        get_info: 트럭 정보 반환
-        stop: 트럭 정지
+    Represents an electric truck in the simulation.
+    Trucks move along a predefined path, manage their battery (SOC), 
+    decide when to charge, and stop at designated locations.
+    Charging aims for 100% SOC without time restrictions imposed by the truck itself.
     """
-    def __init__(self, path_df, simulating_hours, link_id_to_station, model, links_to_move=30):
-        """
-        트럭 객체를 초기화합니다.
-
-        Args:
-            path_df (DataFrame): 트럭의 경로 정보를 담은 데이터프레임
-            simulating_hours (int): 시뮬레이션 시간 (시간)
-            links_to_move (int): 한 번에 이동할 링크 수 (초기값: 30)
-        """
-
-        def get_starting_soc_random():    
+    def __init__(self, path_df, simulating_hours, link_id_to_station, model, links_to_move=40):
+        # Internal helper functions for randomized initial SOC and charge decision threshold
+        def get_starting_soc_random():
             initial_soc_ranges = [
-                (30, 40, 0.01),  # 1%
-                (40, 50, 0.02),  # 2%
-                (50, 60, 0.03),  # 3%
-                (60, 70, 0.04),  # 4%
-                (70, 80, 0.05),  # 5%
-                (80, 90, 0.07),  # 7%
-                (90, 100, 0.78), # 78%
+                (30, 40, 0.01), (40, 50, 0.02), (50, 60, 0.03),
+                (60, 70, 0.04), (70, 80, 0.05), (80, 90, 0.07),
+                (90, 100, 0.78),
             ]
-
             rand_val = random.random()
             cumulative_prob = 0
             for lower, upper, prob in initial_soc_ranges:
                 cumulative_prob += prob
                 if rand_val <= cumulative_prob:
                     return random.randint(lower, upper)
-                
-        def get_charge_decide_soc():
-            initial_soc_ranges = [
-                (10, 20, 0.05),   # 5%
-                (20, 30, 0.13),   # 13%
-                (30, 40, 0.18),   # 18%
-                (40, 50, 0.19),   # 19%
-                (50, 60, 0.16),   # 16%
-                (60, 70, 0.13),   # 13%
-                (70, 80, 0.10),   # 10%
-                (80, 90, 0.05),   # 5%
-                (90, 100, 0.02),   # 5%
-            ]
+            return random.randint(90,100)
 
+        def get_charge_decide_soc():
+            charge_decide_soc_ranges = [
+                (10, 20, 0.05), (20, 30, 0.13), (30, 40, 0.18),
+                (40, 50, 0.19), (50, 60, 0.16), (60, 70, 0.13),
+                (70, 80, 0.10), (80, 90, 0.05), (90, 100, 0.02),
+            ]
             rand_val = random.random()
             cumulative_prob = 0
-            for lower, upper, prob in initial_soc_ranges:
+            for lower, upper, prob in charge_decide_soc_ranges:
                 cumulative_prob += prob
                 if rand_val <= cumulative_prob:
-                    return min(random.randint(lower, upper)+5, 95)
-                
-        self.path_df = path_df.reset_index(drop=True)  # 경로 데이터프레임 인덱스 초기화
-        self.simulating_hours = simulating_hours  # 시뮬레이션 시간 저장
-        self.model = model
+                    return random.randint(lower, upper)
+            return random.randint(40,50)
 
-        # 배터리 용량 및 초기 SOC 설정
+        self.path_df = path_df.reset_index(drop=True)
+        self.simulating_hours = simulating_hours
+        self.model = model # Reference to the main simulation model
         self.BATTERY_CAPACITY = 540  # kWh
-        starting_soc = get_starting_soc_random()
-        self.SOC = starting_soc
-        #print(f"starting SOC: {starting_soc}")
-        self.unique_id = path_df['TRIP_ID'].iloc[0]  # 트럭 고유 ID 설정
-        self.CURRENT_LINK_ID = path_df['LINK_ID'].iloc[0]  # 현재 링크 ID 설정
-        self.NEXT_LINK_ID = None  # 다음 링크 ID 초기화
-        self.current_path_index = 0  # 현재 경로 인덱스 초기화
-        self.next_activation_time = self.path_df['START_TIME_MINUTES'].iloc[0]  # 다음 활성화 시간 설정 (분)
-
-        # 충전 관련 변수 초기화
-        self.is_charging = False  # 충전 중 여부
-        self.waiting = False  # 충전 대기 중 여부
-        self.wants_to_charge = False  # 충전 의사 여부
-        self.charging_station_id = None  # 충전 중인 충전소 ID
-        self.charger_id = None  # 충전 중인 충전기 ID
-        self.charge_start_time = None  # 충전 시작 시간
-        self.charge_end_time = None  # 충전 종료 시간
-        self.charging_time = None  # 충전 시간
-        self.charge_cost = None  # 충전 비용
-        charge_decide = get_charge_decide_soc()
-        #print(f"charging decide SOC: {charge_decide}")
-        self.charge_decide = charge_decide
-
-        # 한 번에 이동할 링크 수 설정
-        self.links_to_move = links_to_move
-
-        self.link_id_to_station = link_id_to_station
-
-        #print(f"Truck agent created with TRIP_ID: {self.unique_id}")
-
-        self.find_next_link_id()  # 다음 링크 ID 찾기
-
-
-
-    def find_next_link_id(self):
-        """
-        n개 이후의 링크 ID와 운전 시간(분)을 찾습니다.
-        """
-        target_index = self.current_path_index + self.links_to_move  # 이동할 링크 수만큼 인덱스 계산
-        if target_index < len(self.path_df):  # 계산된 인덱스가 경로 데이터프레임 범위 내에 있는 경우
-            next_row = self.path_df.iloc[target_index]  # 해당 인덱스의 행 가져오기
-            self.NEXT_LINK_ID = next_row['LINK_ID']  # 다음 링크 ID 설정
-        else:  # target_index가 데이터프레임 범위를 벗어나는 경우 (경로의 마지막 부분)
-            target_index = len(self.path_df) - 1  # target_index를 마지막 인덱스로 설정
-            next_row = self.path_df.iloc[target_index]  # 마지막 행 가져오기
-            self.NEXT_LINK_ID = next_row['LINK_ID']  # 다음 링크 ID 설정
-
-    def update_soc(self, energy_added):
-            """
-            트럭의 SOC를 업데이트하는 함수입니다.
-            충전된 에너지량을 기반으로 SOC를 계산하고, 최대값을 100으로 제한합니다.
-            SOC 업데이트 후 로그를 출력합니다.
-
-            Args:
-                energy_added (float): 충전된 에너지량 (kWh)
-            """
-            added_soc = (energy_added / self.BATTERY_CAPACITY) * 100  # 충전된 에너지량에 따른 SOC 증가량 계산
-            self.SOC = min(100, self.SOC + added_soc)  # SOC 업데이트, 최대값 100 제한
-           #print(f"Truck {self.unique_id} SOC updated to {self.SOC:.2f}%")
-
-    def step(self, current_time):  # current_time 인자 추가
-        """
-        트럭의 이동 조건을 확인하고, 충전이 필요한 경우 충전소를 찾아 이동하거나,
-        충전이 필요하지 않은 경우 목적지까지 이동합니다.
-        """
-
-        # 정지 조건 확인
-        if self.current_path_index >= len(self.path_df) - 1 or current_time >= self.simulating_hours * 60:  
-            self.stop()  # 트럭 정지
-            return  # 정지 조건에 해당하면 함수 종료
-
-        # 이동 조건 확인 (시작 시간 이전, 다음 활성화 시간 이전, 충전 중, 충전 대기 중)
-        if current_time < self.path_df['START_TIME_MINUTES'].iloc[0] or \
-        current_time < self.next_activation_time or \
-        self.is_charging or \
-        self.waiting:
-            return  # 조건에 해당하면 이동하지 않고 함수 종료
         
-        if self.SOC <= 0:
-            self.stop()
+        self.SOC = float(get_starting_soc_random()) # Initial State of Charge
+        self.unique_id = self.path_df['OBU_ID'].iloc[0]
+        self.CURRENT_LINK_ID = self.path_df['LINK_ID'].iloc[0] # Current link ID on the path
+        self.next_activation_time = float(self.path_df['START_TIME_MINUTES'].iloc[0]) # Next time this truck should be processed
+        self.current_path_index = 0 # Current index in its path_df
+
+        # Charging related states
+        self.is_charging = False # True if currently connected to a charger and charging
+        self.waiting = False     # True if in a station's queue
+        self.wants_to_charge = False # True if truck has decided it needs to charge soon
+
+        # Information about the charger/station if charging/waiting
+        self.charging_station_id = None
+        self.charger_id = None
+        self.charge_start_time = None # Simulation time when charging started
+        self.charge_end_time = None   # Simulation time when charging is expected to end (set by Charger)
+        self.charging_time = None     # Duration of the charge (set by Charger)
+        self.charge_cost = None       # Cost of the charge (set by Charger)
+        self.pending_charge_energy = 0.0 # Energy to be added to SOC upon charge completion (set by Charger)
+        
+        # SOC threshold at which the truck actively starts looking for a charger
+        self.charge_decide = min(float(get_charge_decide_soc()), 80) 
+        
+        self.links_to_move = links_to_move # Max number of path links to traverse in one driving segment
+        self.link_id_to_station = link_id_to_station # Mapping of link IDs to Station objects
+        self.unit_minutes = self.model.unit_minutes # Simulation time step unit
+        
+        # Identifying significant stops in the path (e.g., mandatory breaks)
+        min_stop_duration_for_significant = self.model.unit_minutes 
+        self.significant_stop_indices = self.path_df[self.path_df['STOPPING_TIME'] >= min_stop_duration_for_significant].index.tolist()
+        self.significant_stop_indices_set = set(self.significant_stop_indices)
+        
+        # Identifying all EV charging station locations on the truck's path
+        if 'EVCS' in self.path_df.columns:
+            self.all_evcs_indices = self.path_df[self.path_df['EVCS'] == 1].index.tolist()
+        else:
+            self.all_evcs_indices = []
+            
+        self.status = 'inactive' # Initial status; becomes 'driving', 'stopping', 'waiting_queue', or 'stopped'
+        self.stop_end_time = None # If stopping, when the stop is scheduled to end
+        self.just_finished_stopping = False # Flag to manage behavior immediately after a stop
+        self.actual_stop_events = [] # Records details of actual stops made
+
+    def update_soc(self, energy_change_kwh):
+        """
+        Updates the truck's State of Charge (SOC) based on energy change.
+        Energy change is positive for charging, negative for consumption.
+        SOC is capped between 0% and 100%.
+        """
+        # previous_soc = self.SOC # Kept for potential future debugging, not printed now
+        delta_soc = (energy_change_kwh / self.BATTERY_CAPACITY) * 100.0
+        self.SOC += delta_soc
+        self.SOC = max(0.0, min(100.0, self.SOC)) 
+        # print(f"[TRUCK {self.unique_id} SOC_UPDATE]: 에너지: {energy_change_kwh:.2f}kWh, 이전SOC: {previous_soc:.2f}%, 현재SOC: {self.SOC:.2f}%") # Removed
+
+    def step(self, current_time):
+        """
+        Processes the truck's actions for the current simulation time step.
+        This includes moving, stopping, deciding to charge, and interacting with stations.
+        """
+        current_time = float(current_time)
+
+        is_last_index = self.current_path_index >= len(self.path_df) - 1
+        is_time_over = current_time >= (self.simulating_hours * 60.0)
+
+        # Handle simulation end time
+        if is_time_over:
+            if self.status != 'stopped':
+                self.stop()
             return
 
+        # 1. Depot (Final Destination) Processing
+        if is_last_index and not self.is_charging and not self.waiting:
+            if self.status == 'stopped': 
+                return # Already stopped and processed
 
-        # SOC가 떨어지면 충전 의사 설정
-        if self.SOC <=  self.charge_decide:
-            self.wants_to_charge = True
+            current_row = self.path_df.iloc[self.current_path_index]
+            has_charger_here = current_row['EVCS'] == 1
+            needs_charge = self.SOC < 100.0 # Charge if SOC is not exactly 100%
+            
+            if has_charger_here and needs_charge: 
+                self.wants_to_charge = True # Intend to charge if needed and possible
+            
+            # Attempt to queue for charging if conditions met
+            if has_charger_here and self.wants_to_charge and self.status not in ['charging', 'waiting_queue', 'stopped']:
+                station = self.link_id_to_station.get(self.CURRENT_LINK_ID)
+                if station:
+                    station.add_truck_to_queue(self, current_time)
+                else: # No station object found at this link
+                    self.stop()
+                return 
+            else: # No charger, or no need/intent to charge, or already handled
+                self.stop()
+                return
 
-        # 이동할 링크 수 설정 (남은 링크가 적으면 남은 만큼 이동)
-        links_to_move = min(self.links_to_move, len(self.path_df) - self.current_path_index)
+        # 2. Check if it's time for this truck to act
+        if current_time < self.next_activation_time:
+            return
 
-        # 다음 링크 ID와 운전 시간 업데이트
-        self.find_next_link_id()
+        if self.status == 'stopped': 
+            return # Do not process trucks that are already stopped
 
-        # 충전이 필요한지 확인
-        if self.wants_to_charge:
-            # 현재 인덱스부터 이동하려는 인덱스 사이에 충전소가 있는지 확인
-            target_index = self.current_path_index + links_to_move
-            candidate_stations = list(map(lambda i: i if self.path_df['EVCS'].iloc[i] == 1 else None,
-                                            range(self.current_path_index, min(target_index, len(self.path_df)))))
-            # None 값 제거
-            candidate_stations = [station for station in candidate_stations if station is not None]
-            found_station = len(candidate_stations) > 0
+        # 3. Process truck based on its current status
+        if self.status == 'inactive' and self.next_activation_time <= current_time: # First time activation
+            self.status = 'driving'
 
-            if found_station:  # 범위 내에 충전소가 있는 경우
-                if self.SOC <= 30:  # 배터리가 30% 이하인 경우
-                    # 가장 가까운 충전소 선택
-                    nearest_station_index = min(candidate_stations)
-                    i = nearest_station_index
-                else:
-                    # 각 충전소의 고속 충전기 개수를 저장하는 딕셔너리 생성
-                    station_fc_counts = {}
-                    for station_index in candidate_stations:
-                        link_id = self.path_df['LINK_ID'].iloc[station_index] # dataframe의 인덱스 접근 방법
-                        station = self.link_id_to_station.get(link_id)
-                        fc_count = len([charger for charger in station.chargers if charger.power == 200])  # 고속 충전기 개수 계산
-                        station_fc_counts[station_index] = fc_count
+        if self.waiting: # If in a station's queue
+            if self.status != 'waiting_queue':
+                self.status = 'waiting_queue'
+            return # Actions are handled by the Station while waiting
 
-                    # 고속 충전기 개수가 가장 많은 충전소 선택
-                    max_fc_count = max(station_fc_counts.values())
-                    candidate_stations_with_max_fc = [station_index for station_index, fc_count in station_fc_counts.items() if
-                                                        fc_count == max_fc_count]
+        if self.status == 'stopping': # If currently at a scheduled stop
+            if self.stop_end_time is not None and current_time >= self.stop_end_time:
+                self.status = 'driving' # Stop duration ended, resume driving
+                self.stop_end_time = None
+                self.next_activation_time = current_time # Evaluate next move immediately
+                self.just_finished_stopping = True 
+            else: 
+                return # Continue stopping
 
-                    # 고속 충전기 개수가 동일한 충전소가 여러 개인 경우 가장 가까운 충전소 선택
-                    nearest_station_index = min(candidate_stations_with_max_fc)  # 인덱스 값을 직접 비교
-                    i = nearest_station_index
+        # Handle SOC depletion
+        if self.SOC <= 0.001 and not self.is_charging : 
+            if self.status != 'stopped':
+                self.stop() # Stop if out of battery
+            return
 
-                # 충전소까지 이동하는 데 걸리는 시간 및 에너지 소비량 계산
-                if self.current_path_index < 1:  # 초기 위치에서 이동 시
-                    distance_to_station = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[i]
-                else:
-                    distance_to_station = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[i] - self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[
-                        self.current_path_index]
-                if self.current_path_index < 1:  # 초기 위치에서 이동 시
-                    time_to_station = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[i]
-                else:
-                    time_to_station = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[i] - \
-                                    self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index]
+        # 4. Driving Logic
+        if self.status == 'driving':
+            if self.current_path_index >= len(self.path_df): # Should not happen if depot logic is correct
+                if self.status != 'stopped':
+                    self.stop()
+                return
+            
+            current_row = self.path_df.iloc[self.current_path_index]
+            is_at_significant_stop_location = self.current_path_index in self.significant_stop_indices_set
 
-                energy_consumed_to_station = (distance_to_station / 100) * 180  # 100km 당 180kWh 소비 가정
-
-                # SOC 및 next_activation_time 업데이트
-                self.SOC = max(0, self.SOC - (energy_consumed_to_station / self.BATTERY_CAPACITY) * 100)
-                self.next_activation_time = current_time + time_to_station 
-
-                # 충전소 링크 ID로 이동
-                self.CURRENT_LINK_ID = self.path_df['LINK_ID'].iloc[i]
-                self.current_path_index = i
-
-                # 충전 시작
-                station = self.link_id_to_station.get(self.CURRENT_LINK_ID)  # 링크 ID를 이용하여 충전소 객체 가져오기
-                #print(f"Truck {self.unique_id} moved to charging station {station.station_id}")
-                station.add_truck_to_queue(self)  # 충전소 대기열에 트럭 추가
-                self.charging_station_id = station.station_id  # 트럭 객체에 충전소 ID 저장
+            # 4a. Arrival at a Significant Stop
+            if is_at_significant_stop_location and not self.just_finished_stopping:
+                self.status = 'stopping' # Change status to 'stopping'
+                stopping_time_here = float(current_row['STOPPING_TIME'])
+                self.stop_end_time = current_time + stopping_time_here
+                self.next_activation_time = self.stop_end_time # Truck must wait out the stop duration
                 
-            # 충전소를 찾지 못한 경우
-            if not found_station:
-                # 충전소를 찾지 못했으므로 원래 목적지까지 이동
-                end_index = self.current_path_index + links_to_move  # 이동할 링크 수만큼 인덱스 계산
-                if end_index < len(self.path_df):  # 계산된 인덱스가 경로 데이터프레임 범위 내에 있는 경우
-                    total_distance_traveled = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[end_index] - \
-                                            self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[self.current_path_index]
-                    total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[end_index] - \
-                                        self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index]
-                else:  # 마지막 링크까지 이동하는 경우
-                    if self.current_path_index < 1:  # 초기 위치에서 이동 시
-                        total_distance_traveled = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[-1]
-                    else:
-                        total_distance_traveled = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[-1] - \
-                                                self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[self.current_path_index]
-                    if self.current_path_index < 1:  # 초기 위치에서 이동 시
-                        total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[-1]
-                    else:
-                        total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[-1] - \
-                                            self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index]
-                    energy_consumed_to_station = (total_distance_traveled / 100) * 180  # 100km 당 180kWh 소비 가정
+                self.actual_stop_events.append({
+                    'index': self.current_path_index,
+                    'cumulative_length': float(current_row['CUMULATIVE_LINK_LENGTH']),
+                    'stopping_time': stopping_time_here
+                })
 
-                total_energy_consumed = (total_distance_traveled / 100) * 180  # 100km 당 180kWh 소비 가정
-                self.SOC = max(0, self.SOC - (total_energy_consumed / self.BATTERY_CAPACITY) * 100)  # SOC 업데이트
-                self.CURRENT_LINK_ID = self.NEXT_LINK_ID  # 현재 링크 ID 업데이트
-                self.current_path_index += links_to_move  # 현재 경로 인덱스 업데이트
-                self.next_activation_time = current_time + total_driving_time  
-                #print(f"Truck {self.unique_id} is moving on link {self.CURRENT_LINK_ID} (SOC: {self.SOC:.2f}%)")
+                has_charger_here = current_row['EVCS'] == 1
+                needs_charge = self.SOC < 100.0 # Check if charging is needed (SOC < 100%)
 
-        # 충전을 원하지 않거나 충전소가 없는 경우
-        else:
-            # 원래 목적지까지 이동
-            end_index = self.current_path_index + links_to_move  # 이동할 링크 수만큼 인덱스 계산
-            if end_index < len(self.path_df):  # 계산된 인덱스가 경로 데이터프레임 범위 내에 있는 경우
-                if self.current_path_index < 1:  # 초기 위치에서 이동 시
-                    total_distance_traveled = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[end_index]
-                else:
-                    total_distance_traveled = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[end_index] - \
-                                            self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[self.current_path_index]
-                if self.current_path_index < 1:  # 초기 위치에서 이동 시
-                    total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[end_index]
-                else:
-                    total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[end_index] - \
-                                        self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index]
-            else:  # 마지막 링크까지 이동하는 경우
-                if self.current_path_index < 1:  # 초기 위치에서 이동 시
-                    total_distance_traveled = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[-1]
-                else:
-                    total_distance_traveled = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[-1] - \
-                                            self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[self.current_path_index]
-                if self.current_path_index < 1:  # 초기 위치에서 이동 시
-                    total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[-1]
-                else:
-                    total_driving_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[-1] - \
-                                        self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index]
+                if has_charger_here and needs_charge:
+                    station = self.link_id_to_station.get(self.CURRENT_LINK_ID)
+                    if station:
+                        self.wants_to_charge = True 
+                        station.add_truck_to_queue(self, current_time) # Attempt to queue for charging
+                else: 
+                    self.wants_to_charge = False # No charger or SOC is full
 
-            total_energy_consumed = (total_distance_traveled / 100) * 180  # 100km 당 180kWh 소비 가정
-            self.SOC = max(0, self.SOC - (total_energy_consumed / self.BATTERY_CAPACITY) * 100)  # SOC 업데이트
-            self.CURRENT_LINK_ID = self.NEXT_LINK_ID  # 현재 링크 ID 업데이트
-            self.current_path_index += links_to_move  # 현재 경로 인덱스 업데이트
-            self.next_activation_time = current_time + total_driving_time  
-            #print(f"Truck {self.unique_id} is moving on link {self.CURRENT_LINK_ID} (SOC: {self.SOC:.2f}%)")
+                self.just_finished_stopping = False 
+                return # Current action is to start stopping or queueing
 
+            if self.just_finished_stopping: # Reset flag after processing the first step post-stop
+                self.just_finished_stopping = False
+
+            # 4b. Decide to look for charging based on SOC threshold
+            if self.SOC <= self.charge_decide and not self.wants_to_charge:
+                self.wants_to_charge = True # Set intent to charge if SOC is low
+
+            if self.current_path_index >= len(self.path_df) - 1: # Defensive check for end of path
+                 if self.status != 'stopped':
+                    self.stop()
+                 return
+
+            # 4c. Plan Movement and Find Charging Station if needed
+            max_links_for_this_step = min(self.links_to_move, len(self.path_df) - 1 - self.current_path_index)
+            if max_links_for_this_step <= 0: 
+                 if self.status != 'stopped':
+                    self.stop()
+                 return
+            
+            potential_end_index_default_move = self.current_path_index + max_links_for_this_step
+            actual_end_path_index = potential_end_index_default_move 
+            move_to_charge_station = False # Flag if the destination is a charging station
+
+            if self.wants_to_charge:
+                # Simplified station search: 
+                # 1. Check upcoming significant stops with chargers.
+                # 2. If none, check any upcoming EVCS locations.
+                chosen_station_idx = -1
+                upcoming_significant_stops_with_charger = [
+                    idx for idx in self.significant_stop_indices
+                    if self.current_path_index < idx <= potential_end_index_default_move and \
+                       self.path_df.iloc[idx]['EVCS'] == 1
+                ]
+                if upcoming_significant_stops_with_charger:
+                    chosen_station_idx = min(upcoming_significant_stops_with_charger)
+                else:
+                    candidate_opportunistic_stations_indices = [
+                        idx for idx in self.all_evcs_indices
+                        if self.current_path_index < idx <= potential_end_index_default_move
+                    ]
+                    if candidate_opportunistic_stations_indices:
+                        chosen_station_idx = min(candidate_opportunistic_stations_indices) 
+                
+                if chosen_station_idx != -1:
+                    actual_end_path_index = chosen_station_idx
+                    move_to_charge_station = True
+            
+            # --- Movement Calculation ---
+            start_cum_dist_km = 0.0
+            start_cum_time_min = 0.0
+            if self.current_path_index > 0 : 
+                prev_idx = self.current_path_index -1
+                start_cum_dist_km = float(self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[prev_idx])
+                start_cum_time_min = float(self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[prev_idx])
+            
+            actual_end_path_index = min(actual_end_path_index, len(self.path_df) - 1)
+            if actual_end_path_index < self.current_path_index: # Should not happen if logic is correct
+                actual_end_path_index = self.current_path_index # Prevent moving backward
+
+            end_cum_dist_km = float(self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[actual_end_path_index])
+            end_cum_time_min = float(self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[actual_end_path_index])
+
+            distance_traveled_segment_km = end_cum_dist_km - start_cum_dist_km
+            driving_time_segment_min = end_cum_time_min - start_cum_time_min
+
+            if distance_traveled_segment_km < 0.0: distance_traveled_segment_km = 0.0
+            if driving_time_segment_min < 0.001: # Prevent zero driving time to avoid loops
+                driving_time_segment_min = 0.01 
+            # --- Movement Calculation End ---
+
+            energy_consumed_kwh = (distance_traveled_segment_km / 100.0) * 180.0 # Energy consumption formula
+            self.update_soc(-energy_consumed_kwh) 
+            
+            self.current_path_index = actual_end_path_index
+            self.CURRENT_LINK_ID = self.path_df['LINK_ID'].iloc[self.current_path_index]
+            self.next_activation_time = current_time + driving_time_segment_min
+
+            # 4d. Arrival at an Opportunistic (non-significant stop) Charging Station
+            # Check if the destination was a charging station AND it's not a significant stop where charging is handled by 4a.
+            is_now_at_significant_stop_after_move = self.current_path_index in self.significant_stop_indices_set
+            
+            if move_to_charge_station and not is_now_at_significant_stop_after_move : 
+                station = self.link_id_to_station.get(self.CURRENT_LINK_ID)
+                if station:
+                    if self.SOC < 100.0: # Only queue if SOC is less than 100%
+                        self.wants_to_charge = True 
+                        station.add_truck_to_queue(self, current_time) 
+                    else: 
+                        self.wants_to_charge = False # SOC is full, no need to queue
+            return # End of driving step
+            
     def get_info(self):
         """
-        트럭의 정보를 DataFrame 형태로 반환합니다.
+        Collects final information about the truck when the simulation ends for this truck.
         """
+        traveled_distance_at_last_stop85_km = 0.0
+        if hasattr(self, 'actual_stop_events') and self.actual_stop_events: 
+            stops_85_min = [event for event in self.actual_stop_events if event['stopping_time'] >= 85]
+            if stops_85_min:
+                last_stop_85_event = stops_85_min[-1]
+                traveled_distance_at_last_stop85_km = last_stop_85_event['cumulative_length']
+        
+        total_distance_planned_km = 0.0
+        if hasattr(self, 'path_df') and self.path_df is not None and not self.path_df.empty: 
+                total_distance_planned_km = float(self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[-1])
 
-        # 총 이동 거리 계산
-        total_distance = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[-1]
+        destination_reached_flag = False
+        if hasattr(self, 'path_df') and self.path_df is not None and not self.path_df.empty:
+            destination_reached_flag = (self.current_path_index >= len(self.path_df) - 1) and \
+                                     (self.status == 'stopped') and \
+                                     not self.is_charging and not self.waiting
+        
+        stopped_low_battery_flag = (self.SOC <= 0.01) and not destination_reached_flag
+        
+        is_sim_time_over_at_stop = False
+        if hasattr(self.model, 'current_time') and hasattr(self, 'simulating_hours'): 
+            is_sim_time_over_at_stop = (self.model.current_time >= (self.simulating_hours * 60.0))
+        
+        stopped_sim_end_flag = is_sim_time_over_at_stop and \
+                               not destination_reached_flag and \
+                               not stopped_low_battery_flag and \
+                               (self.status == 'stopped')
 
-        # DataFrame 생성
         info_df = pd.DataFrame([{
             'truck_id': self.unique_id,
             'final_SOC': self.SOC,
-            'destination_reached': self.current_path_index >= len(self.path_df) - 1,
-            'stopped_due_to_low_battery': self.SOC <= 0,
-            'stopped_due_to_simulation_end' : self.model.current_time >= self.simulating_hours * 60,
-            'total_distance': total_distance
+            'destination_reached': destination_reached_flag,
+            'stopped_due_to_low_battery': stopped_low_battery_flag,
+            'stopped_due_to_simulation_end': stopped_sim_end_flag, 
+            'total_distance_planned': total_distance_planned_km,
+            'traveled_distance_at_last_stop85': traveled_distance_at_last_stop85_km,
+            'final_path_index': self.current_path_index,
+            'final_status': self.status
         }])
-
         return info_df
 
     def stop(self):
         """
-        트럭 정지 시 동작을 정의합니다.
-        get_info() 함수를 이용하여 현재 상태 정보를 DataFrame으로 수집하고, 
-        시뮬레이터의 결과 DataFrame에 추가합니다.
+        Stops the truck, records its final information, and requests its removal from the simulation.
         """
+        if self.status != 'stopped': # Prevent multiple stop calls for the same truck
+            self.status = 'stopped'
 
-        # 트럭 정보 DataFrame 가져오기
-        info_df = self.get_info()
-        """
-        if self.SOC <= 0:
-            print(f"Truck {self.unique_id} stopped due to low battery (SOC: {self.SOC}) on link {self.CURRENT_LINK_ID}")  # 배터리 부족으로 정지
-        elif self.current_path_index >= len(self.path_df) - 1:
-            print(f"Truck {self.unique_id} reached its destination!")  # 목적지 도착
-        elif self.model.current_time >= self.simulating_hours * 60:  # 시뮬레이션 종료 조건
-            print(f"Truck {self.unique_id} stopped due to simulation end on link {self.CURRENT_LINK_ID}")  # 시뮬레이션 종료로 정지
-        """
-        # 시뮬레이터의 결과 DataFrame에 추가
-        if self.model.truck_results_df is None:  # truck_results_df가 None인 경우 초기화
-            self.model.truck_results_df = pd.DataFrame(columns=info_df.columns)
-        self.model.truck_results_df = pd.concat([self.model.truck_results_df, info_df], ignore_index=True)  # truck_results_df에 할당
+            # Record final information
+            final_info_df = self.get_info() 
+            # print(f"[TRUCK {self.unique_id} STOP_FINAL_INFO @ {getattr(self.model, 'current_time', 'N/A'):.2f}]: \n{final_info_df.to_string()}") # For debugging if needed
 
-        self.model.remove_truck(self)
+            # Add results to the main model's DataFrame
+            try:
+                if not hasattr(self.model, 'truck_results_df') or self.model.truck_results_df is None:
+                    self.model.truck_results_df = pd.DataFrame() 
 
+                current_cols = self.model.truck_results_df.columns
+                if not current_cols.empty:
+                    info_df_reordered = final_info_df.reindex(columns=current_cols).fillna(np.nan)
+                    for col in final_info_df.columns: 
+                        if col not in info_df_reordered.columns: 
+                            info_df_reordered[col] = final_info_df[col]
+                else: 
+                    info_df_reordered = final_info_df.copy()
+
+                self.model.truck_results_df = pd.concat([self.model.truck_results_df, info_df_reordered], ignore_index=True, axis=0)
+            except Exception as e:
+                # Fallback in case of error during DataFrame concatenation
+                try:
+                    if not hasattr(self.model, 'truck_results_df') or self.model.truck_results_df is None:
+                         self.model.truck_results_df = pd.DataFrame()
+                    self.model.truck_results_df = pd.concat([self.model.truck_results_df, final_info_df], ignore_index=True, sort=False) 
+                except Exception: # nested_e_safe:
+                    pass # Log if necessary, but prevent crash
+            
+            # Clean up truck's internal data to free memory
+            if hasattr(self, 'path_df'): 
+                del self.path_df
+                self.path_df = None
+            if hasattr(self, 'actual_stop_events'): 
+                del self.actual_stop_events
+                self.actual_stop_events = []
+            
+            # Request removal from the main simulation model
+            if self.model and hasattr(self.model, 'remove_truck'):
+                self.model.remove_truck(self) 
+        
         return True

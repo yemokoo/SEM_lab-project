@@ -1,94 +1,87 @@
-# simulator.py
+import random
+import warnings
 import pandas as pd
 import numpy as np
 import os
-import random
-from collections import defaultdict
 import gc
+import time
 from charger import Charger
-from station import Station
-from truck import Truck
-import matplotlib.pyplot as plt
-import seaborn as sns
+from station import Station # Assuming these exist
+from truck import Truck   
+import pyarrow.parquet as pq
+import pyarrow as pa
 
-#random.seed(42)
-#np.random.seed(42)
+seed = 42
+random.seed(seed)
+np.random.seed(seed)
+
+# 특정 FutureWarning 메시지를 기준으로 무시합니다.
+warnings.filterwarnings(
+    "ignore",
+    message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.",
+    category=FutureWarning
+)
+
 
 class Simulator:
     """
-    시뮬레이션 클래스
-
-    Attributes:
-        car_paths_df (DataFrame): 차량 경로 데이터 데이터프레임
-        station_df (DataFrame): 충전소 정보 데이터프레임
-        unit_minutes (int): 시뮬레이션 단위 시간 (분)
-        simulating_hours (int): 시뮬레이션 시간 (시간)
-        stations (list): 충전소 객체 리스트
-        link_id_to_station (dict): 링크 ID를 키로, 충전소 객체를 값으로 갖는 딕셔너리
-        trucks (list): 트럭 객체 리스트
-        current_time (int): 현재 시뮬레이션 시간 (분)
-        truck_results_df (DataFrame): 시뮬레이션 결과를 저장하는 데이터프레임
-        number_of_trucks (int): 시뮬레이션에 사용할 트럭 수
-        number_of_max_chargers (int): 시뮬레이션에 사용할 최대 충전기 수
-
-    Methods:
-        __init__: 시뮬레이터 객체 초기화
-        prepare_simulation: 시뮬레이션 환경 설정
-        run_simulation: 시뮬레이션 실행
-        remove_truck: 시뮬레이터에서 트럭 객체 제거
-        analyze_results: 결과 분석
-        calculate_OPEX: 모든 충전소의 유지관리 비용과 총 전기 비용 계산
-        calculate_CAPEX: 모든 충전소의 CAPEX 계산
-        calculate_revenue: 모든 충전소의 총 수익 계산
-        calculate_penalty: 배터리 부족으로 정지한 트럭들의 위약금 계산
-        calculate_of: OF 값 계산
-        load_stations: DataFrame에서 충전소 정보 로드
+    시뮬레이션 클래스 (최적화 및 로직 개선)
     """
     def __init__(self, car_paths_df, station_df, unit_minutes, simulating_hours, number_of_trucks, number_of_max_chargers):
         """
         시뮬레이터 객체를 초기화합니다.
-
-        Args:
-            car_paths_df (DataFrame): 차량 경로 데이터 데이터프레임
-            station_df (DataFrame): 충전소 정보 데이터프레임
-            unit_minutes (int): 시뮬레이션 단위 시간 (분)
-            simulating_hours (int): 시뮬레이션 시간 (시간)
-            number_of_trucks (int): 시뮬레이션에 사용할 트럭 수
-            number_of_max_chargers (int): 시뮬레이션에 사용할 최대 충전기 수
+        입력 데이터는 유효하다고 가정합니다.
         """
         self.car_paths_df = car_paths_df
         self.station_df = station_df
         self.number_of_max_chargers = number_of_max_chargers
         self.unit_minutes = unit_minutes
         self.simulating_hours = simulating_hours
-        self.number_of_trucks = number_of_trucks
+        self.number_of_trucks = number_of_trucks # 초기 목표 트럭 수
 
-        # 시뮬레이션 결과 저장 변수 초기화
-        self.stations = None
-        self.link_id_to_station = None
-        self.trucks = None
-        self.current_time = None
-        self.truck_results_df = pd.DataFrame()
+        self.stations = []
+        self.link_id_to_station = {}
+        self.trucks = [] # 활성 트럭 리스트
+        self.current_time = 0
+        # 결과 저장을 위한 DataFrame 초기화 (컬럼 정의)
+        self.truck_results_df = pd.DataFrame(columns=[
+            'truck_id', 'final_SOC', 'destination_reached',
+            'stopped_due_to_low_battery', 'stopped_due_to_simulation_end',
+            'total_distance_planned', 'traveled_distance_at_last_stop85'
+        ])
+        self.station_results_df = None
+        self.failed_trucks_df = None
+
 
     def prepare_simulation(self):
         """
-        차량 경로 데이터를 전처리하고 시뮬레이션 환경을 설정합니다.
+        시뮬레이션 환경을 설정합니다.
         """
-
-        # 데이터 전처리
         self.stations = self.load_stations(self.station_df)
         self.link_id_to_station = {station.link_id: station for station in self.stations}
-        station_link_ids = [station.link_id for station in self.stations]  # 충전소가 있는 링크 ID 리스트
+        station_link_ids = set(self.link_id_to_station.keys())
 
-        # car_paths_df에 EVCS 열 추가
-        self.car_paths_df['EVCS'] = 0
-        self.car_paths_df.loc[self.car_paths_df['LINK_ID'].isin(station_link_ids), 'EVCS'] = 1
+        # EVCS 컬럼 추가 또는 업데이트
+        if 'EVCS' not in self.car_paths_df.columns:
+             self.car_paths_df['EVCS'] = 0
+        self.car_paths_df['EVCS'] = np.where(self.car_paths_df['LINK_ID'].isin(station_link_ids), 1, 0)
 
-        # 시뮬레이션 환경 설정
-        self.trucks = [] # 트럭 리스트 초기화
-        for _, group in self.car_paths_df.groupby('TRIP_ID'):  # self.car_paths_df 직접 사용
-            truck = Truck(group, self.simulating_hours, self.link_id_to_station, self, 30)
+        # 트럭 객체 생성
+        self.trucks = []
+        truck_creation_start_time = time.time()
+        for obu_id, group in self.car_paths_df.groupby('OBU_ID'):
+            required_cols = ['OBU_ID', 'LINK_ID', 'START_TIME_MINUTES', 'EVCS',
+                             'CUMULATIVE_LINK_LENGTH', 'CUMULATIVE_DRIVING_TIME_MINUTES',
+                             'STOPPING_TIME']
+            missing_cols = [col for col in required_cols if col not in group.columns]
+            if missing_cols:
+                continue # 필수 컬럼 없으면 건너뛰기
+            # Truck 객체 생성 시 오류 없다고 가정
+            truck = Truck(group, self.simulating_hours, self.link_id_to_station, self, 10)
             self.trucks.append(truck)
+
+        truck_creation_end_time = time.time()
+        print(f"  {len(self.trucks)}개의 트럭 에이전트 생성 완료 ({truck_creation_end_time - truck_creation_start_time:.2f}초 소요).")
 
         self.current_time = 0
         gc.collect()
@@ -96,418 +89,492 @@ class Simulator:
 
     def run_simulation(self):
         """
-        시뮬레이션을 실행합니다. 각 시간 단위별로 트럭의 이동 및 충전 상태를 업데이트하고,
-        충전소의 대기열 길이와 전체 충전 중인 차량 수를 기록합니다.
+        시뮬레이션을 실행합니다.
         """
-        for _ in range(self.simulating_hours * (60 // self.unit_minutes)):
-            # 충전소 상태 업데이트
+        total_steps = self.simulating_hours * (60 // self.unit_minutes)
+        run_start_time = time.time()
+        print(f"\n--- 시뮬레이션 시작 (총 {total_steps} 스텝, 단위 시간: {self.unit_minutes}분) ---")
+        print(f"시뮬레이션 총 시간: {self.simulating_hours}시간 ({self.simulating_hours * 60}분)")
+
+        for step_num in range(total_steps):
+            step_start_time = time.time()
+
+            # 1. 충전소 상태 업데이트
             for station in self.stations:
                 station.update_chargers(self.current_time)
 
-            # 충전소 대기열 처리
+            # 2. 충전소 대기열 처리
             for station in self.stations:
                 station.process_queue(self.current_time)
 
-            # 트럭 이동
-            for truck in self.trucks:
-                truck.step(self.current_time)
+            # 3. 트럭 행동 결정 및 상태 업데이트
+            # 리스트 복사본 사용 (반복 중 제거 대비)
+            current_trucks_in_step = list(self.trucks) # 매 스텝마다 현재 트럭 리스트의 복사본 생성
+            
+            active_truck_count_this_step = 0
+            
+            for truck in current_trucks_in_step:
+                # current_trucks_in_step로 순회 중 self.trucks에서 제거되었을 수 있으므로,
+                # 실제 self.trucks에 아직 존재하는지, 그리고 상태가 stopped가 아닌지 확인
+                if truck in self.trucks and truck.status != 'stopped':
+                    if self.current_time >= truck.next_activation_time:
+                        active_truck_count_this_step += 1
+                        try:
+                            truck.step(self.current_time)
+                        except Exception as e:
+                            print(f"ERROR: Truck {truck.unique_id} step failed at time {self.current_time}: {e}")
+                            # 오류 발생 시 해당 트럭을 강제 종료하거나 다른 오류 처리 로직 추가 가능
+                            # truck.stop() # 예: 오류 발생 시 강제 종료
 
-            # 충전소 대기열 재처리
-            for station in self.stations:
-                station.process_queue(self.current_time)
-
+            # 시간 증가
             self.current_time += self.unit_minutes
+            step_end_time = time.time()
+
+            # 스텝별 정보 출력 (너무 자주 출력되면 성능에 영향 줄 수 있음)
+            #print(f"  스텝 {step_num + 1}/{total_steps} 완료. 현재 시뮬레이션 시간: {self.current_time - self.unit_minutes:.0f}분. 활성 트럭: {len(self.trucks)}. 스텝 소요 시간: {step_end_time - step_start_time:.3f}초.")
+
+        loop_end_time = time.time()
+        print(f"--- 시뮬레이션 주 루프 종료 ({loop_end_time - run_start_time:.2f}초 소요) ---")
+        # 루프 종료 직후의 시간은 self.current_time 이지만, 실제 시뮬레이션 상 마지막으로 "처리된" 시간은 그 이전임
+        print(f"최종 시뮬레이션 시간 도달 (처리 완료된 시간): {self.current_time - self.unit_minutes:.0f}분")
+
+
+        # --- 최종 정리 단계 ---
+        print(f"\n--- 시뮬레이션 최종 정리 시작 ---")
+        # self.trucks 리스트는 Truck.stop()에 의해 변경되므로 복사본 사용
+        final_cleanup_trucks = list(self.trucks)
+        cleaned_up_count = 0
+        if not final_cleanup_trucks:
+            print("  정리할 트럭 없음 (모든 트럭이 이미 stopped 상태이거나 제거됨).")
+        else:
+            print(f"  정리 대상 트럭 수 (루프 종료 후): {len(final_cleanup_trucks)}")
+            for truck_to_cleanup in final_cleanup_trucks:
+                # truck.stop() 내부에서 self.status를 'stopped'로 먼저 바꾸므로 중복 호출은 방지됨.
+                if truck_to_cleanup.status != 'stopped':
+                    print(f"  최종 정리: 트럭 {truck_to_cleanup.unique_id} (상태: {truck_to_cleanup.status}, 현재 SOC: {truck_to_cleanup.SOC:.2f}%, 최종 활성화 예정 시간: {truck_to_cleanup.next_activation_time:.2f}분) 강제 종료 중...")
+                    try:
+                        # truck.stop()은 Truck 내부의 is_time_over와 유사한 역할을 여기서 수행
+                        # Truck.stop()은 내부적으로 self.model.remove_truck(self)를 호출
+                        truck_to_cleanup.stop() 
+                        cleaned_up_count +=1
+                    except Exception as e:
+                        print(f"ERROR: Truck {truck_to_cleanup.unique_id} final stop failed: {e}")
+                # else: # 이미 stopped 상태인 경우 (정상 종료 또는 이전 스텝에서 stop됨)
+                    # print(f"  정보: 트럭 {truck_to_cleanup.unique_id}는 이미 'stopped' 상태입니다.")
+
+
+        if cleaned_up_count > 0:
+            print(f"--- 최종 정리 완료 ({cleaned_up_count}대 트럭 강제 종료) ---")
+        else:
+            print(f"--- 최종 정리 완료 (추가로 강제 종료된 트럭 없음) ---")
+        
+        print(f"시뮬레이션 종료 후 최종 활성 트럭 수: {len(self.trucks)}") # 최종 확인
+
+        run_end_time = time.time() # 실제 run_simulation 종료 시간
+        print(f"--- 시뮬레이션 전체 로직 종료 ({run_end_time - run_start_time:.2f}초 소요) ---")
+
+
 
     def remove_truck(self, truck):
         """
-        시뮬레이터에서 트럭 객체를 제거합니다.
-
-        Args:
-            truck (Truck): 제거할 트럭 객체
+        시뮬레이터의 활성 트럭 리스트에서 특정 트럭 객체를 제거합니다.
         """
         if truck in self.trucks:
             self.trucks.remove(truck)
 
+
     def analyze_results(self):
         """
-        시뮬레이션 결과를 분석합니다.
-        OF 값을 계산하고, 충전소별 총이익, 순이익, 비용, 충전기 당 총이익 및 순이익을 계산하여 그래프로 시각화합니다.
+        시뮬레이션 결과를 분석하고 최종 OF 값을 계산합니다.
         """
+        analysis_start_time = time.time()
 
-        # 충전소별 정보를 DataFrame으로 저장
-        station_data = pd.DataFrame([{
-            'station_id': station.station_id,
-            'num_of_charger': station.num_of_chargers  # 충전기 개수 정보 추가
-        } for station in self.stations])
-
-        self.station_results_df = station_data
-
-        # 배터리 부족으로 정지한 및 시뮬레이팅 시간 초과 트럭 데이터(시간 내에 목적지 도착 실패)만 남긴 DataFrame
-        self.failed_trucks_df = self.truck_results_df[
-            (self.truck_results_df['destination_reached'] == False) & (
-                (self.truck_results_df['stopped_due_to_low_battery'] == True) | (self.truck_results_df['stopped_due_to_simulation_end'] == True)
-            )
+        station_data = [
+            {'station_id': station.station_id, 'num_of_charger': station.num_of_chargers}
+            for station in self.stations
         ]
+        self.station_results_df = pd.DataFrame(station_data)
 
-        # OF 값 계산 (기존 함수 활용)
+        # truck_results_df가 None이거나 비어있을 경우 처리
+        if self.truck_results_df is None or self.truck_results_df.empty:
+             self.failed_trucks_df = pd.DataFrame(columns=self.truck_results_df.columns if self.truck_results_df is not None else []) # 빈 DF 생성
+        else:
+            self.failed_trucks_df = self.truck_results_df[
+                (self.truck_results_df['destination_reached'] == False) &
+                (
+                    (self.truck_results_df['stopped_due_to_low_battery'] == True) |
+                    (self.truck_results_df['stopped_due_to_simulation_end'] == True)
+                )
+            ].copy()
+
         of = self.calculate_of()
-        
+        analysis_end_time = time.time()
+        print(f"--- 결과 분석 완료 ({analysis_end_time - analysis_start_time:.2f}초 소요) ---")
         return of
 
 
     def calculate_OPEX(self, station_df):
         """
-        모든 충전소의 유지관리 비용과 총 전기 비용을 계산하여 DataFrame으로 반환합니다.
-
-        Args:
-            station_df (DataFrame): 충전소 정보 DataFrame
-
-        Returns:
-            DataFrame: 충전소별 유지관리 비용, 전기 비용, 총 OPEX를 포함한 DataFrame
+        모든 충전소의 OPEX(운영 비용)를 계산합니다.
         """
-        results = []  # 결과를 저장할 리스트
+        opex_results = []
+        base_rate_per_kw = 2580 / 30
+        energy_rate_per_kwh = 101.7 + 9 + 5
+        vat_and_fund_multiplier = 1.132
+        labor_cost_per_charger = 6250
+        maint_cost_per_charger = 800
 
-        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
-            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
-
-            # 충전기별 충전량을 모두 더함
-            total_charged_energy_station = sum(
-                charger.total_charged_energy for charger in self.stations[station_id].chargers
-            )
-
-            total_power = sum(
-                charger.power for charger in self.stations[station_id].chargers
-            )  # 모든 충전기의 power 합산
-            energy_price = ((total_power * (2580/30) + total_charged_energy_station * (101.7 + 9 + 5))*1.132
-            )  # 전기요금계: KW 당 기본 요금 + 전력량요금 + 기후환경요금 + 연료비조정액
-        # 총 전기 비용: 전기요금계 + 부가가치세 + 전력산업기반요금
-
-            labor_cost = self.stations[station_id].num_of_chargers * (6250)  # 인건비: 충전기 당 인건비
-            maintenance_cost = self.stations[station_id].num_of_chargers * (800)  # 유지관리 비용: 충전기 당 유지 관리 비용
-            opex = (
-                labor_cost + maintenance_cost + energy_price
-            )  # 충전소의 유지관리 비용과 전기 비용
-
-            # 결과를 딕셔너리로 저장
-            results.append({
-                'station_id': station_id,
-                'labor_cost': labor_cost,
-                'maintenance_cost': maintenance_cost,
-                'energy_price': energy_price,
+        for station in self.stations:
+            total_charged_energy_station = sum(c.total_charged_energy for c in station.chargers)
+            total_power = sum(c.power for c in station.chargers) 
+            
+            energy_price = ((total_power * base_rate_per_kw) + (total_charged_energy_station * energy_rate_per_kwh)) * vat_and_fund_multiplier
+            labor_cost = station.num_of_chargers * labor_cost_per_charger
+            maintenance_cost = station.num_of_chargers * maint_cost_per_charger
+            opex = labor_cost + maintenance_cost + energy_price
+            
+            opex_results.append({
+                'station_id': station.station_id, 
+                'labor_cost': labor_cost, 
+                'maintenance_cost': maintenance_cost, 
+                'energy_price': energy_price, 
                 'opex': opex
             })
-
-        # 결과를 DataFrame으로 변환
-        result_df = pd.DataFrame(results)
-        return result_df  # 충전소별 유지관리 비용, 전기 비용, 총 OPEX를 포함한 DataFrame 반환
+        result_df = pd.DataFrame(opex_results)
+        return result_df
 
 
     def calculate_CAPEX(self, station_df):
         """
-        모든 충전소의 CAPEX를 계산하여 DataFrame으로 반환합니다.
-
-        Args:
-            station_df (DataFrame): 충전소 정보 DataFrame
-
-        Returns:
-            DataFrame: 충전소별 CAPEX 상세 내역을 포함한 DataFrame (station_id, charger_cost, kepco_cost, construction_cost, capex)
+        모든 충전소의 CAPEX(자본 비용)를 계산합니다. (일일 비용 기준)
         """
-        results = []  # 결과를 저장할 리스트
+        capex_results = []
+        LIFESPAN_YEARS = 5
+        DAYS_PER_YEAR = 365
+        daily_divider = LIFESPAN_YEARS * DAYS_PER_YEAR
+        charger_cost_per_unit = 80000000
+        kepco_cost_per_kw = 50000
+        charger_power_kw = 200 
+        construction_cost_multiplier = 1868123 * 50 
 
-        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
-            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
-            num_chargers = self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
-
-            # CAPEX 계산
-            if num_chargers == 0:  # 충전기 개수가 0이면 해당 충전소 CAPEX는 0
-                charger_cost = 0
-                kepco_cost = 0
-                construction_cost = 0
-                station_capex = 0
+        for station in self.stations:
+            num_chargers = station.num_of_chargers
+            if num_chargers == 0:
+                charger_cost, kepco_cost, construction_cost, station_capex = 0, 0, 0, 0
             else:
-                # CAPEX 계산 (충전기 개수가 0보다 클 때만 계산)
-                charger_cost = ((80000000) * num_chargers) / (365*5)   # 충전기 비용
-                kepco_cost = 50000 * num_chargers * 200 / (365*5)   # 한전 불입금
-                construction_cost = 1868123 * 50 * num_chargers / (365*5)  # 충전소 건설 비용
-                station_capex = (
-                    charger_cost
-                    + kepco_cost
-                    + construction_cost
-                )  # 충전소 1개의 CAPEX
-
-            # 결과를 딕셔너리로 저장
-            results.append({
-                'station_id': station_id,
-                'charger_cost': charger_cost,
-                'kepco_cost': kepco_cost,
-                'construction_cost': construction_cost,
+                charger_cost = (charger_cost_per_unit * num_chargers) / daily_divider
+                kepco_cost = (kepco_cost_per_kw * num_chargers * charger_power_kw) / daily_divider
+                construction_cost = (construction_cost_multiplier * num_chargers) / daily_divider
+                station_capex = charger_cost + kepco_cost + construction_cost
+            
+            capex_results.append({
+                'station_id': station.station_id, 
+                'charger_cost': charger_cost, 
+                'kepco_cost': kepco_cost, 
+                'construction_cost': construction_cost, 
                 'capex': station_capex
             })
+        result_df = pd.DataFrame(capex_results)
+        return result_df
 
-        # 결과를 DataFrame으로 변환
-        result_df = pd.DataFrame(results)
-        return result_df  # 충전소별 CAPEX 상세 내역을 포함한 DataFrame 반환
 
     def calculate_revenue(self, station_df):
         """
-        모든 충전소의 충전 요금을 계산하여 DataFrame으로 반환합니다.
-
-        Args:
-            station_df (DataFrame): 충전소 정보 DataFrame
-
-        Returns:
-            DataFrame: 충전소별 수익을 포함한 DataFrame (station_id, revenue)
+        모든 충전소의 수익을 계산합니다.
         """
+        revenue_results = []
+        for station in self.stations:
+            revenue = sum(charger.rate * charger.total_charged_energy 
+                          for charger in station.chargers)
+            revenue_results.append({'station_id': station.station_id, 'revenue': revenue})
+        result_df = pd.DataFrame(revenue_results)
+        return result_df
 
-        results = []  # 결과를 저장할 리스트
-
-        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
-            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
-            revenue = 0  # 수익 초기화
-            for charger in self.stations[station_id].chargers:  # 충전기별 수익 계산
-                revenue += charger.rate * charger.total_charged_energy  # 충전기별 rate와 total_charged_energy를 곱하여 수익 계산
-
-            # 결과를 딕셔너리로 저장
-            results.append({
-                'station_id': station_id,
-                'revenue': revenue
-            })
-
-        # 결과를 DataFrame으로 변환
-        result_df = pd.DataFrame(results)
-
-        return result_df  # 충전소별 수익을 포함한 DataFrame 반환
 
     def calculate_penalty(self, failed_trucks_df, station_df):
         """
-        배터리 부족으로 정지한 트럭들의 위약금과 충전기 관련 위약금을 계산하여 DataFrame으로 반환합니다.
-
-        Args:
-            failed_trucks_df (DataFrame): 배터리 부족으로 정지한 트럭 정보 DataFrame
-
-        Returns:
-            DataFrame: 위약금 정보를 포함한 DataFrame (truck_penalty, charger_penalty, total_penalty) - 1개의 행
+        위약금을 계산합니다.
         """
-        truck_penalty = 0  # 트럭 위약금 초기화
-        charger_penalty = 0 # 충전기 패널티 초기화
-        number_of_charges = 0 # number_of_charges 변수 추가 및 초기화
+        truck_penalty = 0
+        charger_penalty = 0
+        
+        # failed_trucks_df가 None이거나 비어있을 경우 처리
+        if failed_trucks_df is not None and not failed_trucks_df.empty:
+            planned_dist = failed_trucks_df['total_distance_planned']
+            last_stop_dist = failed_trucks_df['traveled_distance_at_last_stop85'].fillna(0)
 
-        for idx, row in failed_trucks_df.iterrows():  # DataFrame의 각 행을 순회
-            distance = row['total_distance'] / 2  # 이동 거리의 절반을 위약금 계산에 사용
+            distance_for_penalty = np.where(
+                last_stop_dist <= 0,
+                planned_dist / 2,
+                np.maximum(0, planned_dist - last_stop_dist) / 2 
+            )
+            
+            choice = np.random.choice([True, False], size=len(failed_trucks_df))
+            
+            penalty = np.where(
+                choice,
+                136395.90 + 3221.87 * distance_for_penalty - 2.72 * distance_for_penalty**2,
+                121628.18 + 2765.50 * distance_for_penalty - 2.00 * distance_for_penalty**2
+            )
+            
+            truck_penalty = np.maximum(0, penalty).sum()
 
-            # 랜덤으로 컨테이너 종류 선택
-            if random.choice([True, False]):  # 50% 확률로 40FT 또는 20FT 선택
-                penalty = 136395.90 + 3221.87 * distance - 2.72 * distance**2 #40ft
-            else:  # 20FT 컨테이너
-                penalty = 121628.18 + 2765.50 * distance - 2.00 * distance**2 #20ft
+        number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
 
-            truck_penalty += penalty  # 위약금을 총 위약금에 누적
-
-        for idx, row in station_df.iterrows():  # DataFrame의 각 행을 순회
-            station_id = int(row['station_id'])  # station_id를 정수형으로 변환
-            number_of_charges += self.stations[station_id].num_of_chargers  # 충전소의 충전기 개수
-
-        if number_of_charges > self.number_of_max_chargers:
-            charger_penalty = 80000000 * (number_of_charges - self.number_of_max_chargers) # 초과 설치 페널티
+        if number_of_total_chargers > self.number_of_max_chargers:
+            charger_cost_per_unit = 80000000
+            charger_penalty = charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers)
         else:
             charger_penalty = 0
-
+            
         total_penalty = truck_penalty + charger_penalty
 
-        # 결과를 딕셔너리로 저장 (1개의 행)
-        results = {
-            'truck_penalty': truck_penalty,
-            'charger_penalty': charger_penalty,
-            'total_penalty': total_penalty
-        }
+        results = {'truck_penalty': truck_penalty, 'charger_penalty': charger_penalty, 'total_penalty': total_penalty}
+        return pd.DataFrame([results])
 
-        # 결과를 DataFrame으로 변환
-        result_df = pd.DataFrame([results])  # 딕셔너리를 리스트로 감싸서 1개의 행으로 만듦
-
-        return result_df  # 위약금 정보를 포함한 DataFrame 반환
 
     def calculate_of(self):
         """
-        OF 값을 계산하고, 충전소별 CAPEX, OPEX, REVENUE 및 페널티를 시각화합니다.
-        또한, 순이익 그래프를 추가합니다.
+        OF(Objective Function) 값을 계산합니다. (Revenue - OPEX - CAPEX - Penalty)
         """
-        revenue_df = self.calculate_revenue(self.station_results_df)  # 모든 충전소의 총 수익
-        opex_df = self.calculate_OPEX(self.station_results_df)  # 모든 충전소의 OPEX
-        capex_df = self.calculate_CAPEX(self.station_results_df)  # 모든 충전소의 CAPEX
-        penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)  # 트럭 정지 페널티 및 충전기 초과 설치 페널티
+        if self.station_results_df is None or self.station_results_df.empty:
+            return 0 
 
-        # 각 DataFrame에서 필요한 열을 추출하고 station_id를 기준으로 병합합니다.
-        revenue_df = revenue_df[['station_id', 'revenue']]
-        opex_df = opex_df[['station_id', 'opex']]
-        capex_df = capex_df[['station_id', 'capex']]
+        revenue_df = self.calculate_revenue(self.station_results_df)
+        opex_df = self.calculate_OPEX(self.station_results_df)
+        capex_df = self.calculate_CAPEX(self.station_results_df)
+        penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)
 
-        # station_id를 기준으로 DataFrame 병합
-        merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
-        merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
-        merged_df.fillna(0, inplace=True)  # 결측값은 0으로 채움
+        merged_df = pd.merge(revenue_df[['station_id', 'revenue']], 
+                             opex_df[['station_id', 'opex']], 
+                             on='station_id', how='outer')
+        merged_df = pd.merge(merged_df, 
+                             capex_df[['station_id', 'capex']], 
+                             on='station_id', how='outer')
+        merged_df.fillna(0, inplace=True) 
 
-        # 순이익 계산
-        merged_df['net_profit'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
-
-        # 전체 합계 계산
-        revenue = merged_df['revenue'].sum()
-        opex = merged_df['opex'].sum()
-        capex = merged_df['capex'].sum()
-        total_penalty = penalty_df['total_penalty'].sum()
-        truck_penalty = penalty_df['truck_penalty'].sum()
-        charger_penalty = penalty_df['charger_penalty'].sum()
-
-        revenue = round(revenue)
-        opex = round(opex)
-        capex = round(capex)
-        total_penalty = round(total_penalty) 
-        truck_penalty = round(truck_penalty)
-        charger_penalty = round(charger_penalty)
-
-        of = revenue - opex - capex - total_penalty  # OF 값 계산
-
+        total_revenue = merged_df['revenue'].sum()
+        total_opex = merged_df['opex'].sum()
+        total_capex = merged_df['capex'].sum()
+        total_penalty = penalty_df['total_penalty'].iloc[0] if not penalty_df.empty else 0
+        
+        of = total_revenue - total_opex - total_capex - total_penalty
         of = round(of)
 
-        print(f"Revenue: {revenue}, OPEX: {opex}, CAPEX: {capex}, Penalty: {total_penalty}, OF: {of}")
-        
+        # 결과 출력
+        truck_penalty = penalty_df['truck_penalty'].iloc[0] if not penalty_df.empty else 0
+        charger_penalty = penalty_df['charger_penalty'].iloc[0] if not penalty_df.empty else 0
+        print(f"\n--- 재무 요약 ---")
+        print(f"총 수익: {round(total_revenue)}")
+        print(f"총 운영비(OPEX): {round(total_opex)}")
+        print(f"총 자본비(CAPEX): {round(total_capex)}")
+        print(f"총 위약금: {round(total_penalty)} (트럭: {round(truck_penalty)}, 충전기: {round(charger_penalty)})")
+        print(f"목적 함수 값 (OF): {of}")
+        print(f"-------------------")
+
         return of
+
 
     def load_stations(self, df):
         """
-        DataFrame에서 충전소 정보를 읽어와서 충전소 객체 리스트를 생성하는 함수입니다.
-
-        Args:
-            df (DataFrame): 충전소 정보 DataFrame (첫 번째 열: link_id, 두 번째 열: num_of_charger)
-
-        Returns:
-            list: 충전소 객체 리스트
+        DataFrame에서 충전소 정보를 읽어 Station 객체 리스트를 생성합니다.
         """
+        stations = []
+        required_cols = ['link_id', 'num_of_charger']
+        if not all(col in df.columns for col in required_cols):
+            return [] 
 
-        stations = []  # 충전소 객체를 저장할 리스트
-        for idx, row in df.iterrows():  # DataFrame의 각 행을 순회
-            num_of_chargers = int(row['num_of_charger'])  # 충전기 개수
-
-            charger_specs = []  # 충전기 사양을 저장할 리스트
-            for _ in range(num_of_chargers):  # 충전기 개수만큼 반복
-                charger_specs.append({'power': 200, 'rate': 560})  # 충전기 사양 추가 (200kW, 560원/kWh)
-            station = Station(  # 충전소 객체 생성
-                station_id=idx,  # 충전소 ID (행 인덱스 사용)
-                link_id=row['link_id'],  # 충전소가 위치한 링크 ID
-                num_of_chargers=num_of_chargers,  # 총 충전기 개수
-                charger_specs=charger_specs  # 충전기 사양 리스트
+        stations = [
+            Station(
+                station_id=idx, 
+                link_id=int(row['link_id']), 
+                num_of_chargers=int(row['num_of_charger']), 
+                charger_specs=[{'power': 200, 'rate': 560}] * int(row['num_of_charger']) 
             )
-            stations.append(station)  # 생성된 충전소 객체를 리스트에 추가
-        return stations  # 충전소 객체 리스트 반환
-    
+            for idx, row in df.iterrows() 
+        ]
+        return stations
+
+# --- 전역 함수 ---
+
 def run_simulation(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers):
     """
-    시뮬레이션을 실행하고 실행 시간을 반환합니다.
+    시뮬레이션을 준비, 실행하고 최종 OF 값을 반환합니다. 실행 시간도 측정합니다.
     """
-
-    # 시뮬레이션 객체 생성
+    overall_start_time = time.time()
+    print("\n=== 시뮬레이션 시작 ===") 
     sim = Simulator(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers)
-
-    # 시뮬레이션 준비
-    sim.prepare_simulation()
-
-    # 시뮬레이션 실행
-    sim.run_simulation()
-
-    # 시뮬레이션 적합도 계산
-    of = sim.analyze_results()
     
+    prepare_start = time.time()
+    sim.prepare_simulation()
+    prepare_end = time.time()
+    print(f"--- 시뮬레이션 준비 완료 ({prepare_end - prepare_start:.2f}초 소요) ---") 
+
+    run_start = time.time()
+    sim.run_simulation()
+    run_end = time.time()
+
+    analyze_start = time.time()
+    of = sim.analyze_results()
+    analyze_end = time.time()
+
+    overall_end_time = time.time()
+    total_duration = overall_end_time - overall_start_time
+    print(f"\n=== 총 실행 시간: {total_duration:.2f}초 ({total_duration/60:.2f}분) ===") 
     return of
 
-def load_car_path_df(car_paths_folder, number_of_trucks): 
+def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
     """
-    차량 경로 데이터를 로드하는 함수
-
-    Args:
-        car_paths_folder (str): 차량 경로 데이터가 있는 폴더 경로
-        number_of_trucks (int): 시뮬레이션에 사용할 트럭 수
-        station_link_ids (list): 충전소가 위치한 링크 ID 리스트
-
-    Returns:
-        DataFrame (car_paths_df): 전처리 및 필터링된 차량 경로 데이터 DataFrame
+    차량 경로 데이터(Parquet 형식)를 로드하고 샘플링하는 함수.
+    파일/데이터 관련 오류가 발생하지 않는다고 가정합니다.
     """
-    
-    #random.seed(100)
+    load_start_time = time.time()
+    print(f"--- 차량 경로 데이터 로딩 시작 (목표 트럭 수: {number_of_trucks}) ---") 
 
-    # 차량 경로 데이터 로드 및 전처리
-    subfolders = [d for d in os.listdir(car_paths_folder) if os.path.isdir(os.path.join(car_paths_folder, d))]
+    # 1. 날짜 폴더 선택
+    subfolders = [d for d in os.listdir(car_paths_folder)
+                  if os.path.isdir(os.path.join(car_paths_folder, d)) and len(d) == 10 and d[4] == '-' and d[7] == '-']
+    if not subfolders:
+         raise FileNotFoundError(f"{car_paths_folder} 에서 'YYYY-MM-DD' 형식의 하위 폴더를 찾을 수 없습니다.")
     random_subfolder = random.choice(subfolders)
+    selected_folder_path = os.path.join(car_paths_folder, random_subfolder)
+    print(f"  선택된 날짜 폴더: {random_subfolder}") 
+
+    # 2. 전체 OBU_ID 및 AREA_ID 정보 수집
+    parquet_files = []
+    all_obu_data = []
+    files_in_folder = [f for f in os.listdir(selected_folder_path) if f.endswith(".parquet")]
+    if not files_in_folder:
+         raise FileNotFoundError(f"{selected_folder_path} 에서 .parquet 파일을 찾을 수 없습니다.")
+    
+    print(f"  OBU/AREA 정보 수집 중...") 
+    for file in files_in_folder:
+        file_path = os.path.join(selected_folder_path, file)
+        parquet_files.append(file_path)
+        table = pq.read_table(file_path, columns=['OBU_ID', 'AREA_ID', 'CUMULATIVE_LINK_LENGTH'])
+        df_partial = table.to_pandas()
+        last_entries = df_partial.loc[df_partial.groupby('OBU_ID')['CUMULATIVE_LINK_LENGTH'].idxmax()]
+        all_obu_data.extend(last_entries[['OBU_ID', 'AREA_ID', 'CUMULATIVE_LINK_LENGTH']].values.tolist())
+    
+    if not all_obu_data:
+         raise ValueError("어떤 파일에서도 OBU 정보를 추출할 수 없었습니다.")
+
+    all_obu_df = pd.DataFrame(all_obu_data, columns=['OBU_ID', 'AREA_ID', 'MAX_CUMUL_DIST']).drop_duplicates(subset=['OBU_ID'])
+    all_obu_ids = set(all_obu_df['OBU_ID'])
+    unique_area_ids = all_obu_df['AREA_ID'].unique()
+    actual_num_areas = len(unique_area_ids)
+    print(f"  총 {len(all_obu_ids)}개의 고유 OBU_ID와 {actual_num_areas}개의 고유 AREA_ID 발견.") 
+
+    # 3. OBU_ID 샘플링
+    selected_obu_ids = set()
+    num_area_select = min(actual_num_areas, estimated_areas)
+    area_sampled_ids = set()
+    if num_area_select > 0:
+        all_obu_df_sorted = all_obu_df.sort_values('MAX_CUMUL_DIST', ascending=False)
+        area_groups = all_obu_df_sorted.groupby('AREA_ID')
+        for area_id, group in area_groups:
+            if len(area_sampled_ids) < num_area_select:
+                area_sampled_ids.add(group['OBU_ID'].iloc[0])
+            else: break
+        selected_obu_ids.update(area_sampled_ids)
+
+    remaining_needed = number_of_trucks - len(selected_obu_ids)
+    if remaining_needed > 0:
+        available_random_ids = list(all_obu_ids - selected_obu_ids)
+        num_to_sample_randomly = min(remaining_needed, len(available_random_ids))
+        if num_to_sample_randomly > 0:
+            random_sampled_ids = random.sample(available_random_ids, num_to_sample_randomly)
+            selected_obu_ids.update(random_sampled_ids)
+
+    if len(selected_obu_ids) > number_of_trucks:
+        excess = len(selected_obu_ids) - number_of_trucks
+        ids_to_remove_from = list(selected_obu_ids - area_sampled_ids) 
+        if len(ids_to_remove_from) >= excess:
+            ids_to_remove = random.sample(ids_to_remove_from, excess)
+        else: 
+            ids_to_remove = ids_to_remove_from + random.sample(list(area_sampled_ids), excess - len(ids_to_remove_from))
+        selected_obu_ids -= set(ids_to_remove)
+
+    selected_obu_ids_set = selected_obu_ids 
+    print(f"  로드할 OBU_ID {len(selected_obu_ids_set)}개 선택 완료.") 
+
+    # 4. 선택된 OBU_ID 데이터 로드
     car_paths_list = []
+    read_start_time = time.time()
+    print(f"  선택된 OBU_ID 데이터 로딩 중...") 
+    for file_path in parquet_files:
+        filters = [('OBU_ID', 'in', list(selected_obu_ids_set))] 
+        df_filtered = pd.read_parquet(file_path, engine='pyarrow', filters=filters) 
+        
+        if not df_filtered.empty:
+            car_paths_list.append(df_filtered)
+    read_end_time = time.time()
+    print(f"  데이터 로딩 완료 ({read_end_time - read_start_time:.2f}초 소요).") 
 
-    date_str = random_subfolder
-    date = date_str.split('=')[-1]
-    print(f"Processing data for date: {date}")
+    if not car_paths_list:
+        raise ValueError("선택된 OBU_ID에 대한 데이터를 로드하지 못했습니다.")
 
-    for file in os.listdir(os.path.join(car_paths_folder, random_subfolder)):
-        if file.endswith(".csv"):
-            file_path = os.path.join(car_paths_folder, random_subfolder, file)
-            car_paths_list.append(pd.read_csv(file_path))
-
+    # 5. 데이터 병합
+    concat_start_time = time.time()
     car_paths_df = pd.concat(car_paths_list, ignore_index=True)
+    del car_paths_list 
+    gc.collect()
+    concat_end_time = time.time()
+    print(f"  데이터 병합 완료 ({concat_end_time - concat_start_time:.2f}초 소요).") 
 
-    car_paths_df['DATETIME'] = pd.to_datetime(car_paths_df['DATETIME'], format='%H:%M').dt.time
+    # 6. 데이터 전처리
+    preprocess_start_time = time.time()
+    car_paths_df['DATETIME'] = pd.to_datetime(car_paths_df['DATETIME'], format='%H:%M', errors='coerce').dt.time
+    first_times = car_paths_df.groupby('OBU_ID')['DATETIME'].transform('first')
+    car_paths_df['START_TIME_MINUTES'] = first_times.apply(lambda x: x.hour * 60 + x.minute if pd.notnull(x) else np.nan)
+    
+    original_truck_count = car_paths_df['OBU_ID'].nunique()
+    car_paths_df.dropna(subset=['START_TIME_MINUTES'], inplace=True)
+    final_truck_count = car_paths_df['OBU_ID'].nunique()
+    if original_truck_count != final_truck_count:
+        print(f"  [정보] 유효하지 않은 시작 시간으로 인해 {original_truck_count - final_truck_count}개 트럭 경로 제거됨.") 
+    
+    preprocess_end_time = time.time()
+    print(f"  데이터 전처리 완료 ({preprocess_end_time - preprocess_start_time:.2f}초 소요).") 
 
-    car_paths_df['START_TIME_MINUTES'] = car_paths_df.groupby('TRIP_ID')['DATETIME'].transform('first').apply(
-        lambda x: (x.hour * 60 + x.minute)
-    )
+    # 7. 최종 반환
+    load_end_time = time.time()
+    print(f"--- 차량 경로 데이터 로딩 완료 (총 {load_end_time - load_start_time:.2f}초 소요) ---") 
+    print(f"  최종 {final_truck_count}개 트럭 경로 데이터 반환.") 
+    return car_paths_df
 
-    grouped_data = car_paths_df.groupby('TRIP_ID')
-    grouped_paths = [group for _, group in grouped_data]
-
-    random.shuffle(grouped_paths)
-    selected_groups = grouped_paths[:min(number_of_trucks, len(grouped_paths))]
-
-    # area_id 기반 샘플링
-    area_paths = defaultdict(list)
-    for group in grouped_paths:
-        area_id = group['AREA_ID'].iloc[0]
-        area_paths[area_id].append(group)
-
-    for area_id, paths in area_paths.items():
-        paths.sort(key=lambda x: x['CUMULATIVE_LINK_LENGTH'].iloc[-1], reverse=True)
-
-    area_selected_groups = []
-    for area_id, paths in area_paths.items():
-        # map 함수를 사용하여 경로 복사 및 TRIP_ID 수정
-        processed_paths = list(map(lambda path: path.copy().assign(TRIP_ID=path['TRIP_ID'].astype(str) + "_AREA"), 
-                                   paths[:int(number_of_trucks * 0.001)]))
-        area_selected_groups.extend(processed_paths)
-
-    selected_groups.extend(area_selected_groups)
-
-    # 최종 결과 DataFrame 생성
-    filtered_car_paths_df = pd.concat(selected_groups, ignore_index=True)
-
-    return filtered_car_paths_df
 
 def load_station_df(station_file_path):
-    # 충전소 데이터 로드 및 전처리
-    station_df = pd.read_csv(station_file_path, sep=',')  # CSV 파일을 읽어와서 pandas DataFrame으로 저장
-
-    # 열 이름의 앞뒤 공백 제거 및 소문자로 변환
-    station_df.columns = station_df.columns.str.strip()
-    station_df.columns = station_df.columns.str.lower()
-    return station_df # 충전소 정보 df 반환
+    """충전소 데이터를 로드하고 전처리합니다. 파일/데이터 관련 오류 없다고 가정."""
+    station_df = pd.read_csv(station_file_path, sep=',')
+    station_df.columns = station_df.columns.str.strip().str.lower()
+    if 'link_id' not in station_df.columns or 'num_of_charger' not in station_df.columns:
+         raise ValueError("Station file missing required columns: 'link_id', 'num_of_charger'")
+    station_df['link_id'] = station_df['link_id'].astype(int)
+    station_df['num_of_charger'] = station_df['num_of_charger'].astype(int)
+    return station_df
 
 
 # 메인 함수 (스크립트 실행 시 호출)
 if __name__ == '__main__':
-    # 파일 경로 설정
-    car_paths_folder = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\analyzed_paths_for_simulator(DAY)"
-    station_file_path = r"C:\Users\wngud\Desktop\project\heavy_duty_truck_charging_infra\data analysis\candidate(debug).csv"
-    
-    simuating_hours = 30
-    unit_time = 60
+    car_paths_folder = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_stop_added)"
+    station_file_path = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
+
+    simulating_hours = 36
+    unit_time = 20 
     number_of_trucks = 7062
-    number_of_charges = 2000
+    number_of_max_chargers = 2000 
 
-    car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks)
+    print("--- 데이터 로딩 시작 ---") 
+    data_load_start = time.time()
+    car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33)
     station_df = load_station_df(station_file_path)
+    data_load_end = time.time()
+    print(f"--- 데이터 로딩 완료 ({data_load_end - data_load_start:.2f}초 소요) ---") 
 
-    gc.collect()
-    
-    run_simulation(car_paths_df, station_df, unit_time, simuating_hours, number_of_trucks, number_of_charges)
+    # 데이터 로딩 성공 여부 확인 (데이터가 비어있지 않은지)
+    if car_paths_df is not None and not car_paths_df.empty and station_df is not None and not station_df.empty:
+        gc.collect() 
+        run_simulation(car_paths_df, station_df, unit_time, simulating_hours, number_of_trucks, number_of_max_chargers)
+    else:
+        print("\n--- 데이터 로딩 실패 또는 유효한 데이터 없음으로 시뮬레이션 중단 ---") 

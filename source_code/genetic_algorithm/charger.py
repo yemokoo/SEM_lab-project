@@ -31,8 +31,9 @@ class Charger:
         self.station_id = station_id
         self.rate = rate  # 1kWh 당 비용
         self.current_truck = None  # 현재 충전 중인 트럭 객체
-        self.total_charged_energy = 0  # 충전기가 충전한 총 에너지 (kWh)
-
+        self.total_charged_energy = 0.0  # 이 충전기가 충전한 총 에너지 (kWh)
+        self.charging_events_count = 0   # 이 충전기가 처리한 총 충전 이벤트 수
+        
     def start_charging(self, truck, current_time):
         """
         트럭 충전을 시작합니다.
@@ -59,6 +60,7 @@ class Charger:
 
         # 충전 시작 시 충전량 추가
         self.total_charged_energy += remaining_energy  # 충전기가 충전한 총 에너지 업데이트
+        self.charging_events_count += 1
 
     def finish_charging(self):
         """
