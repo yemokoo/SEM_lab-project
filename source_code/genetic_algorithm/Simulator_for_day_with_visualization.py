@@ -789,7 +789,7 @@ if __name__ == '__main__':
 
     simulating_hours = 36
     unit_time = 20 
-    number_of_trucks = 7062
+    number_of_trucks = 7262
     number_of_max_chargers = 2000 
 
     print("--- 데이터 로딩 시작 ---") 

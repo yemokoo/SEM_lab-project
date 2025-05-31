@@ -1,5 +1,23 @@
 #화물차 궤적 데이터 기반 시뮬레이션 개발 및 전기차 충전소 위치 및 규모 최적화
+import warnings
+
+# resource_tracker의 'No such file or directory' 관련 UserWarning만 무시
+warnings.filterwarnings('ignore', message="resource_tracker:.*No such file or directory.*", category=UserWarning)
+
 import os
+import traceback
+
+# --- NumPy 및 관련 라이브러리 스레드 제한 설정 ---
+# 중요: numpy, pandas 등을 import 하기 전에 실행되어야 합니다!
+num_threads_to_set = '1'
+os.environ['OMP_NUM_THREADS'] = num_threads_to_set
+os.environ['MKL_NUM_THREADS'] = num_threads_to_set
+os.environ['OPENBLAS_NUM_THREADS'] = num_threads_to_set
+os.environ['NUMEXPR_NUM_THREADS'] = num_threads_to_set
+os.environ['VECLIB_MAXIMUM_THREADS'] = num_threads_to_set
+# ---------------------------------------------
+
+import datetime
 import time
 import numpy as np
 import pandas as pd
@@ -9,17 +27,21 @@ import Simulator_for_day as si
 from multiprocessing import Pool, cpu_count
 import logging
 from collections import Counter
+from shared_memory_utils import put_df_to_shared_memory, reconstruct_df_from_shared_memory, cleanup_shms_by_info
+import gc
+import pprint
 
-path_for_car = r"C:\Users\yemoy\SEM_화물차충전소\drive-download-20241212T004036Z-001"
-path_for_car_oneday =r"C:\Users\yemoy\SEM_화물차충전소\경로폴더"
-path_for_station = r"C:\Users\yemoy\SEM_화물차충전소\Final_Candidates_Selected.csv"
-#random.seed(42)
-#np.random.seed(42)
+path_for_car = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/simulator/Trajectory(DAY_stop_added)"
+path_for_station = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/simulator/Final_Candidates_Selected.csv"
+path_for_result = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/GA_result"
+random.seed(42)
+np.random.seed(42)
 
 #100개의 솔루션 -> 토너먼트로 25개 선정 -> 25개중 상위 4개는 엘리티즘 -> 1등을 제외한 24개에 대하여 교차를 통해 96개의 해 생성  -> 100개의 다음세대 솔루션 생성.
 #해당 사항으로 우선 알고리즘이 개발되어 일단은 한 세대당 100개의 솔루션이 있음을 가정하고 시뮬레이터에 적용하길 바랍니다.
 # 유전 알고리즘 파라미터 설정
-POPULATION_SIZE = 100  # 개체군 크기
+CORE_NUM = 150  # 코어 수
+POPULATION_SIZE = 150  # 개체군 크기
 GENERATIONS = 10000  # 최대 세대 수 (필요 시 무시됨)
 TOURNAMENT_SIZE = 4 # 토너먼트 크기
 MUTATION_RATE = 0.015  # 변이 확률
@@ -27,12 +49,12 @@ MUTATION_GENES_MULTIPLE = 20  # 중복된 해에 들어간 유전자 정보의 �
 NUM_CANDIDATES = 500 # 충전소 위치 후보지 개수
 CONVERGENCE_CHECK_START_GENERATIONS = 1000  # 수렴 체크 시작 세대
 MAX_NO_IMPROVEMENT = 15  # 개선 없는 최대 세대 수
-INITIAL_CHARGERS =  2000 # 설치할 충전기의 대수 충전기 
+INITIAL_CHARGERS = 2000 # 설치할 충전기의 대수 충전기 
 TOTAL_CHARGERS = 10000 # 총 충전기 대수
 PARENTS_SIZE = round(POPULATION_SIZE/2) # 부모의 수
-# 전동화율이 5%임을 가정(원본이 10%임임)
+# 전동화율 가정(원본이 10%임)
 ELECTRIFICATION_RATE = 1.0
-TRUCK_NUMBERS = int(7062 * ELECTRIFICATION_RATE) # 전체 화물차 대수 / 7062대는 10%의 전동화율 기준 대수
+TRUCK_NUMBERS = int(7262 * ELECTRIFICATION_RATE) # 전체 화물차 대수 / 7062대는 10%의 전동화율 기준 대수
 
 # 중복 정보를 저장할 DataFrame 초기화
 duplicate_info_df = pd.DataFrame(columns=['Generation', 'Solution', 'Indices', 'Count'])
@@ -49,83 +71,142 @@ def station_gene_initial(pop_size,num_candi,total_chargers):
     return population
 
 
-def evaluate_individual(args):
-    """
-    단일 개체에 대한 적합도를 계산하는 함수입니다.
-    """
+def evaluate_individual_shared(args):
+    global worker_original_station_df 
+
+    individual, index, shm_infos_car_paths = args
+
+    unit_minutes = 20   
+    simulating_hours = 36  
+    num_trucks = TRUCK_NUMBERS # GA.py의 전역변수
     
-    individual, index, car_paths_df, station_df = args
-    #print(f"Evaluating individual {index}")
-        
-        #아래는 추후 df 길이 문제가 생기면 사용용
-        #print(f"station_df 길이: {len(station_df)}")
-        
-        # 시뮬레이션 파라미터
-    unit_minutes = 60
-    simulating_hours = 30
-    num_trucks = TRUCK_NUMBERS
+    try:
+        # 1. 공유 메모리에서 car_paths_df 재구성 및 복사
+        car_paths_df_copy = reconstruct_df_from_shared_memory(shm_infos_car_paths)
 
-        # Ensure the length of 'individual' matches the number of rows in station_df
-    if len(individual) != len(station_df):
-        raise ValueError(f"The length of 'individual' ({len(individual)}) does not match the number of rows in station_df ({len(station_df)}).")        
-    station_df['num_of_charger'] = individual   
-        # 시뮬레이션 실행 및 적합도 값 획득
-    fitness_value = si.run_simulation(
-                car_paths_df,
-                station_df,
-                unit_minutes,
-                simulating_hours,
-                num_trucks,
-                TOTAL_CHARGERS
-            )
-    #print(f"fitness_value for individual {index}: {fitness_value}")
-    return (index, fitness_value)
+        station_df_for_sim = worker_original_station_df.copy()
+        station_df_for_sim['num_of_charger'] = individual # 유전자 적용
 
+        fitness_value = si.run_simulation( 
+            car_paths_df_copy,
+            station_df_for_sim,
+            unit_minutes,
+            simulating_hours,
+            num_trucks,
+            TOTAL_CHARGERS # GA.py의 전역변수
+        )
 
-def fitness_func(population, station_df, path_history, pool):
-    """시뮬레이션에서 리턴되는 값들을 통해 각 솔루션의 적합도를 평가하는 함수."""
-    car_paths_folder = path_for_car  
-    car_paths_df = si.load_car_path_df(car_paths_folder, TRUCK_NUMBERS)
-    print("차량 경로 파일 길이", len(car_paths_df))
-    path_history.append(len(car_paths_df))
+        # 사용한 DataFrame 명시적 삭제
+        del car_paths_df_copy
+        del station_df_for_sim
+        gc.collect()
 
-    args_list = [
-        (individual, idx, car_paths_df, station_df)
-        for idx, individual in enumerate(population)
-    ]
+        return (index, fitness_value)
 
-    max_retries = 3
-    retry_count = 0
+    except Exception as e:
+        # 작업자 프로세스에서 예외 발생 시 모든 관련 정보 출력/로깅
+        print(f"CRITICAL PYTHON EXCEPTION in worker process (PID: {os.getpid()}) ")
+        print(f"Individual index processed: {index} ")
+        # 필요하다면 individual 데이터의 일부를 로깅하여 어떤 입력에서 오류가 발생했는지 추적
+        print(f"Individual data: {individual} ")
+        print(f"Exception Type: {type(e)} ")
+        print(f"Exception Message: {str(e)} ")
+        print(f"Traceback: ")
+        traceback.print_exc() # 오류 발생 지점의 전체 콜 스택(호출 순서)을 출력
+
+        # 오류 발생을 알리고 GA가 비정상적으로 멈추는 것을 방지하기 위해
+        # 매우 낮은 적합도 값을 반환합니다.
+        raise
+
+worker_original_station_df = None
+
+def init_worker_station(original_station_df_data):
+    warnings.filterwarnings('ignore', message="resource_tracker:.*No such file or directory.*", category=UserWarning)
+    global worker_original_station_df
+    # print(f"Worker {os.getpid()} initializing with station_df...")
+    worker_original_station_df = original_station_df_data
+    # print(f"Worker {os.getpid()} station_df initialized.")
+
+def fitness_func(population, original_station_df_ref_for_fitness_func, path_history, pool, current_generation_number):
+    """
+    시뮬레이션에서 리턴되는 값들을 통해 각 솔루션의 적합도를 평가하는 함수.
+    공유 메모리 사용 및 세대별 car_paths_df 로딩 반영.
+    original_station_df_ref_for_fitness_func: 메인 프로세스의 원본 station_df 참조 (워커는 initializer로 받음)
+    current_generation_number: 공유 메모리 이름 고유성 확보를 위한 세대 번호
+    """
+    car_paths_folder = path_for_car  # 전역 변수 사용
+
+    load_start_time = time.time()
+    # 매 세대마다 car_paths_df 새로 로드 (사용자 요구사항)
+    car_paths_df_current_gen = si.load_car_path_df(car_paths_folder, TRUCK_NUMBERS)
+    load_end_time = time.time()
+    print(f"  - 데이터 로딩 시간: {load_end_time - load_start_time:.2f}초")
     
-    while retry_count < max_retries:
-        try:
-            # 기존 pool 사용
-            results = list(pool.imap(evaluate_individual, args_list))
-            
-            # 결과 정렬
-            sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
-            sorted_indices = [x[0] for x in sorted_results]
-            sorted_population = [population[i] for i in sorted_indices]
+    if car_paths_df_current_gen is None or car_paths_df_current_gen.empty:
+        print("Warning: load_car_path_df returned empty or None. Skipping fitness evaluation for this generation.")
+        return [0] * len(population), population # 또는 적절한 에러 처리/기본값 반환
 
-            print("\n모든 작업이 완료되었습니다.")
+    path_history.append(len(car_paths_df_current_gen)) # 경로 길이 기록
 
-            # 적합도 값 추출
-            fitness_values = [
-                fitness if fitness is not None else -np.inf for _, fitness in sorted_results  
-            ]
-            return fitness_values, sorted_population
-            
-        except Exception as e:
-            retry_count += 1
-            logging.warning(
-                f"An error occurred: {e}. Retry attempt {retry_count}/{max_retries}."
-            )
-            print(f"An error occurred: {e}. Retry attempt {retry_count}/{max_retries}.")
-            time.sleep(5)
+    shm_infos_car_paths = None
+    shm_objects_to_cleanup_in_main = [] # 메인 프로세스에서 close/unlink할 shm 객체들
 
-    logging.error("Max retries reached. Exiting.")
-    return [0] * len(population)
+    results = [] # imap 결과를 담을 리스트
 
+    try:
+        # 1. 현재 세대의 car_paths_df를 공유 메모리에 올림
+        # unique_prefix는 세대별로 달라야 하므로 current_generation_number 사용
+        shm_unique_prefix = f"gen{current_generation_number}"
+        shm_infos_car_paths, shm_objects_to_cleanup_in_main = put_df_to_shared_memory(car_paths_df_current_gen, unique_prefix=shm_unique_prefix)
+        
+        del car_paths_df_current_gen # 공유 메모리에 올렸으므로 원본은 삭제 (메모리 절약)
+        gc.collect()
+
+        # 2. 워커에 전달할 인자 리스트 생성
+        #    individual (유전자), idx (인덱스), shm_infos_car_paths (공유 car_paths_df 정보)
+        #    station_df는 워커가 initializer를 통해 worker_original_station_df를 사용함
+        args_list = [
+            (individual, idx, shm_infos_car_paths)
+            for idx, individual in enumerate(population)
+        ]
+
+        # 3. 멀티프로세싱 실행 (pool.imap 사용)
+        map_start_time = time.time()
+        calculated_chunksize = max(1, len(population) // CORE_NUM) if CORE_NUM > 0 else 1
+
+        results = list(pool.imap(evaluate_individual_shared, args_list, chunksize=calculated_chunksize))
+        map_end_time = time.time()
+        print(f"  - 멀티프로세싱 시간: {map_end_time - map_start_time:.2f}초")
+
+    except Exception as e:
+        print(f"ERROR in fitness_func during shared memory setup or pool.imap: {e}")
+        print(f"!!! Exception Type: {type(e)} !!!")
+        print(f"!!! Exception Message: {str(e)} !!!")
+        # 예외 발생 시 로깅하거나 기본값을 반환할 수 있습니다.
+        # 이 경우, 생성된 공유 메모리가 있다면 정리해야 합니다.
+        raise
+    finally:
+        for shm_obj in shm_objects_to_cleanup_in_main:
+            try:
+                shm_obj.close() # 메인 프로세스에서 연결 해제
+                shm_obj.unlink()# 시스템에서 제거 (이것이 중요)
+            except FileNotFoundError:
+                print(f"SHM object {shm_obj.name if shm_obj else 'Unknown'} already unlinked or not fully created.")
+            except Exception as e_clean:
+                print(f"Error cleaning up SHM object {shm_obj.name if shm_obj else 'Unknown'} in fitness_func: {e_clean}")
+        
+    # 5. 결과 처리 및 반환
+    if not results: # imap에서 에러가 나서 비어있을 경우
+        print("Warning: pool.imap returned empty results.")
+        return [-np.inf] * len(population), population
+
+    # 결과 정렬 (기존 로직)
+    sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
+    sorted_indices = [x[0] for x in sorted_results]
+    sorted_population = [population[i] for i in sorted_indices]
+    fitness_values = [fitness if fitness is not None else -np.inf for _, fitness in sorted_results]
+    
+    return fitness_values, sorted_population
 
 
 def choice_gene_tournament_no_duplicate(population, tournament_size, num_parents, fitness_values):
@@ -195,10 +276,10 @@ def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
     crossover.extend(elitism)
     # 나머지 자손 생성
     while len(crossover) < pop_size:
-        # 부모 4명 선택 (예: 랜덤 선택)
+        # 부모 10명 선택
         parents = random.sample(selected_parents, 10)
         
-        crossover_points =sorted(random.sample(range(1, num_genes), 9))
+        crossover_points = sorted(random.sample(range(1, num_genes), 9))
 
         child = np.concatenate([
             parents[0][:crossover_points[0]],
@@ -213,11 +294,11 @@ def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
             parents[9][crossover_points[8]:]])
         crossover.append(child)
     
-    #총 중복 개체 수 (동일한 해가 여러 번 나온 횟수의 합)
+    # 총 중복 개체 수
     counter = Counter(tuple(ind) for ind in crossover)
     duplicates_count = sum((count - 1) for count in counter.values() if count > 1)
 
-    # 중복 정보 저장
+    # 중복 정보 저장 및 출력
     if duplicates_count > 0:
         print(f"[중복 개체 확인] 이번 세대에서 총 {duplicates_count}개의 중복 개체가 발견되었습니다.")
         
@@ -229,18 +310,17 @@ def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
                     duplicate_info[ind_tuple] = []
                 duplicate_info[ind_tuple].append(idx)
 
-        for solution, count in counter.items():
-            if count > 1:
-                indices = [idx for idx, ind in enumerate(crossover) if tuple(ind) == solution]
-                duplicate_info_df = pd.concat([duplicate_info_df, pd.DataFrame({
-                    'Generation': [generation + 1],
-                    'Solution': [str(solution)],
-                    'Indices': [str(indices)],
-                    'Count': [len(indices)]
-                })], ignore_index=True)
-
         for solution, indices in duplicate_info.items():
-            print(f"개체 {solution} 이(가) {len(indices)}회 등장 (인덱스: {indices})")
+            # 중복 정보 출력
+            print(f" - ID {indices[0]}와 동일한 개체가 {len(indices)}회 등장 (인덱스: {indices})")
+
+            # DataFrame에 저장
+            duplicate_info_df = pd.concat([duplicate_info_df, pd.DataFrame({
+                'Generation': [generation + 1],
+                'Solution': [str(solution)], 
+                'Indices': [str(indices)],
+                'Count': [len(indices)]
+            })], ignore_index=True)
 
     else:
         print("[중복 개체 확인] 이번 세대에서는 중복된 개체가 없습니다.")
@@ -252,7 +332,6 @@ def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
         })], ignore_index=True)
 
     return crossover[:pop_size]
-
     
 def get_random_charger(max, adaptive_constant):    
             
@@ -269,7 +348,6 @@ def get_random_charger(max, adaptive_constant):
                 if rand_val <= cumulative_prob:
                     return random.randint(lower, upper)
                 
-
 
 def mutation(crossovered, pop_size, mutation_rate, num_candi, initial_chargers, adaptive_constant):
     """
@@ -390,6 +468,12 @@ def genetic_algorithm():
         'Best_Chargers': pd.Series(dtype='int')
     })
 
+    path_for_result = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/GA_result"
+    now = datetime.datetime.now()
+    folder_name = now.strftime("%Y-%m-%d-%H-%M")
+    result_folder_path = os.path.join(path_for_result, folder_name)
+    os.makedirs(result_folder_path, exist_ok=True)
+
     # 각 세대의 전체 적합도 값 저장용 리스트
     all_fitness_history = []
     min_fitness_history = []
@@ -398,24 +482,33 @@ def genetic_algorithm():
     best_fitness_number_of_charger = []
     best_individual_history = []  # 세대별 최고 개체 유전자 저장
     station_file_path = path_for_station
-    station_df = si.load_station_df(station_file_path)
 
     best_individual = None  # 역대 최고 개체 정보 저장 변수 초기화
     last_generation_individuals = None  # 마지막 세대 개체 정보 저장 변수 초기화
-    with Pool(processes=cpu_count()) as pool:
-        for generation in range(GENERATIONS):
-            print(f"\n세대 {generation + 1}/{GENERATIONS} 진행 중...")
+    original_station_df = si.load_station_df(station_file_path)
+    for generation in range(GENERATIONS): # 각 세대 루프 시작
+        start_time = time.time()
+        print(f"\n세대 {generation + 1}/{GENERATIONS} 진행 중...")
 
+        # --- 주요 변경 사항: 매 세대마다 Pool 생성 ---
+        with Pool(processes=CORE_NUM,
+                  initializer=init_worker_station,
+                  initargs=(original_station_df,)) as pool: # original_station_df는 루프 밖에서 한 번만 로드
+            warnings.filterwarnings('ignore', message="resource_tracker:.*No such file or directory.*", category=UserWarning)
             if generation == 0:
                 population = station_gene_initial(POPULATION_SIZE, NUM_CANDIDATES, INITIAL_CHARGERS)
             else:
-                population = mutated
-            if generation == GENERATIONS:
-                print("지정된 세대의 연산이 종료되었으므로 계산 결과를 출력합니다")
-                break
+                population = mutated # 이전 세대의 mutated 결과를 사용
 
-            # 적합도 계산
-            fitness_values, sorted_population = fitness_func(population, station_df, path_history, pool)
+            if generation == GENERATIONS: # 이 조건은 GENERATIONS 루프 때문에 사실상 도달하기 어려울 수 있습니다.
+                                         # 루프 조건이 range(GENERATIONS)이므로 generation은 GENERATIONS-1까지 갑니다.
+                                         # 만약 GENERATIONS번째 '세대'라는 표현을 원한다면 range(GENERATIONS+1) 등을 고려해야 합니다.
+                                         # 혹은 루프 종료 후 처리 로직으로 빼는 것이 명확합니다.
+                print("지정된 세대의 연산이 종료되었으므로 계산 결과를 출력합니다")
+                break # 루프를 빠져나감
+
+            # 적합도 계산 (pool 객체를 인자로 전달)
+            fitness_values, sorted_population = fitness_func(population, original_station_df, path_history, pool, generation)
             print('적합도 평가 완료')
 
             # 전체 적합도 값 저장
@@ -436,9 +529,32 @@ def genetic_algorithm():
             current_best_individual = sorted_population[0]  # 현재 세대 최고 개체
             best_individual_history.append(current_best_individual)  # 최고 개체 저장
             fitness_history.append(current_best_fitness)  # 최고 적합도 저장
-            current_best_chargers = np.sum(current_best_individual) # 현재 세대 최고 개체 충전기 수
+            current_best_chargers = int(np.sum(current_best_individual)) # 현재 세대 최고 개체 충전기 수
+            current_best_individual_list = current_best_individual.tolist() # 리스트로 변환
 
             print(f"세대 {generation + 1}의 최고 적합도: {current_best_fitness}")
+            print(f"  - 현재 세대 최고 개체 충전기 합계: {current_best_chargers}")
+            print(f"  - 현재 세대 최고 개체 유전자: ") 
+            columns_to_show = 50  # <--- 원하는 열 개수 
+
+            # 각 숫자를 일정한 너비로 맞추기 위해 최대 자릿수 계산 (선택 사항이지만 정렬에 도움)
+            try:
+                max_width = len(str(max(current_best_individual_list))) + 1 # 최대값 자릿수 + 공백 1칸
+            except ValueError:
+                max_width = 2 # 리스트가 비었을 경우 기본값
+
+            for index, item in enumerate(current_best_individual_list):
+                # f-string을 사용하여 각 숫자를 max_width 만큼의 공간에 오른쪽 정렬하여 출력
+                print(f"{item:<{max_width}}", end="") 
+                
+                # (index + 1)이 columns_to_show의 배수이면 줄 바꿈
+                if (index + 1) % columns_to_show == 0:
+                    print() # 새 줄로 이동
+
+            # 마지막 줄이 columns_to_show 개수만큼 채워지지 않았을 경우, 
+            # 마지막에 줄 바꿈을 한 번 더 해줘서 다음 출력이 이어지지 않도록 함
+            if len(current_best_individual_list) % columns_to_show != 0:
+                print()
 
 
             # 수렴 체크를 위한 변수 초기화 (세대 10 이전에는 0으로 설정)
@@ -503,10 +619,6 @@ def genetic_algorithm():
                 'Best_Chargers': [current_best_chargers]        # 최고 적합도 개체의 충전기 수
             })], ignore_index=True)
 
-
-        
-
-
             # 역대 최고 개체 갱신
             if current_best_fitness > best_fitness:
                 best_fitness = current_best_fitness
@@ -538,36 +650,34 @@ def genetic_algorithm():
             mutated = mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, INITIAL_CHARGERS, generation)
             print('변이 연산 완료')
 
-            
-
             best_fitness = max(max_fitness_history)  # 최고 적합도 갱신
             # 수렴 정보 저장
-           # convergence_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\convergence_info_5%.csv", index=False, mode='w')
+            convergence_df.to_csv(os.path.join(result_folder_path, "convergence_info.csv"), index=False, mode='w')
 
-            # 중복 정보 저장
-           # duplicate_info_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\duplicate_info_5%.csv", index=False, mode='w')
+            # 중복 정보 저장 (주석 유지 - duplicate_info_df 정의 없음)
+            duplicate_info_df.to_csv(os.path.join(result_folder_path, "duplicate_info.csv"), index=False, mode='w')
             print("세대별 중복 개체 정보를 duplicate_info.csv 파일로 저장")
 
             # 역대 최고 개체 및 마지막 세대 개체 정보 저장
             if best_individual is not None:
                 best_individual_df = pd.DataFrame([best_individual],
-                                                columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
+                                                    columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
                 best_individual_df['Fitness'] = best_fitness
-                #best_individual_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\best_individual_5%.csv", index=False, mode='w')
+                best_individual_df.to_csv(os.path.join(result_folder_path, "best_individual.csv"), index=False, mode='w')
                 print("역대 최고 개체 정보를 best_individual.csv 파일로 저장")
 
             if last_generation_individuals is not None:
                 last_gen_df = pd.DataFrame(last_generation_individuals,
-                                        columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
+                                           columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
                 last_gen_df['Fitness'] = all_fitness_history[-1]  # 마지막 세대의 적합도 리스트 추가
-               # last_gen_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\last_generation_5%.csv", index=False, mode='w')
+                last_gen_df.to_csv(os.path.join(result_folder_path, "last_generation.csv"), index=False, mode='w')
                 print("마지막 세대 개체 정보를 last_generation.csv 파일로 저장")
 
             # 세대별 최고 개체 정보 저장
             best_individuals_df = pd.DataFrame(best_individual_history,
-                                            columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
+                                                columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
             best_individuals_df['Generation'] = np.arange(1, len(best_individual_history) + 1)
-            #best_individuals_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\best_individuals_per_generation_5%.csv", index=False, mode='w')
+            best_individuals_df.to_csv(os.path.join(result_folder_path, "best_individuals_per_generation.csv"), index=False, mode='w')
             print("세대별 최고 개체 정보를 best_individuals_per_generation.csv 파일에 저장")
 
             result_dict = {
@@ -577,8 +687,12 @@ def genetic_algorithm():
                 'Mean_fitness': mean_fitness_history
             }
             result_df = pd.DataFrame(result_dict)
-            #result_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\ga_results.csv", index=False, mode='w')
+            result_df.to_csv(os.path.join(result_folder_path, "ga_results.csv"), index=False, mode='w')
             print("각 세대별 fitness value를 csv파일로 저장")
+
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print(f"\n세대 {generation + 1}/{GENERATIONS} 연산 소요 시간 {elapsed_time:.2f}초")
 
     print("\n유전 알고리즘 종료")
     print(f"최종 세대 수: {generation + 1}")
@@ -661,9 +775,9 @@ def genetic_algorithm():
     fig3.tight_layout()  # fig3 에 tight_layout 적용
 
     # 각 figure 별로 savefig 호출 및 파일명 변경
-    #fig.savefig(r'C:\Users\user\Desktop\화물차 충전소\fitness_history_5%.png')
-    #fig2.savefig(r'C:\Users\user\Desktop\화물차 충전소\convergence_info_5%.png')  # 수정: 수렴 정보 그래프 저장
-    #fig3.savefig(r'C:\Users\user\Desktop\화물차 충전소\charger_count_5%.png')
+    fig.savefig(os.path.join(result_folder_path, 'fitness_history.png'))
+    fig2.savefig(os.path.join(result_folder_path, 'convergence_info.png'))  # 수정: 수렴 정보 그래프 저장
+    fig3.savefig(os.path.join(result_folder_path, 'charger_count.png'))
 
     plt.show()  # 마지막에 plt.show() 호출하여 그래프 화면 출력 (선택 사항)
 

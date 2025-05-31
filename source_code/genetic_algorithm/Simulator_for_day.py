@@ -80,8 +80,8 @@ class Simulator:
             truck = Truck(group, self.simulating_hours, self.link_id_to_station, self, 10)
             self.trucks.append(truck)
 
-        truck_creation_end_time = time.time()
-        print(f"  {len(self.trucks)}개의 트럭 에이전트 생성 완료 ({truck_creation_end_time - truck_creation_start_time:.2f}초 소요).")
+        #truck_creation_end_time = time.time()
+        #print(f"  {len(self.trucks)}개의 트럭 에이전트 생성 완료 ({truck_creation_end_time - truck_creation_start_time:.2f}초 소요).")
 
         self.current_time = 0
         gc.collect()
@@ -92,12 +92,12 @@ class Simulator:
         시뮬레이션을 실행합니다.
         """
         total_steps = self.simulating_hours * (60 // self.unit_minutes)
-        run_start_time = time.time()
-        print(f"\n--- 시뮬레이션 시작 (총 {total_steps} 스텝, 단위 시간: {self.unit_minutes}분) ---")
-        print(f"시뮬레이션 총 시간: {self.simulating_hours}시간 ({self.simulating_hours * 60}분)")
+        #run_start_time = time.time()
+        #print(f"\n--- 시뮬레이션 시작 (총 {total_steps} 스텝, 단위 시간: {self.unit_minutes}분) ---")
+        #print(f"시뮬레이션 총 시간: {self.simulating_hours}시간 ({self.simulating_hours * 60}분)")
 
         for step_num in range(total_steps):
-            step_start_time = time.time()
+            #step_start_time = time.time()
 
             # 1. 충전소 상태 업데이트
             for station in self.stations:
@@ -119,59 +119,63 @@ class Simulator:
                 if truck in self.trucks and truck.status != 'stopped':
                     if self.current_time >= truck.next_activation_time:
                         active_truck_count_this_step += 1
-                        try:
-                            truck.step(self.current_time)
-                        except Exception as e:
-                            print(f"ERROR: Truck {truck.unique_id} step failed at time {self.current_time}: {e}")
+                        truck.step(self.current_time)
+                        #try:
+                            #truck.step(self.current_time)
+                        #except Exception as e:
+                            # print(f"ERROR: Truck {truck.unique_id} step failed at time {self.current_time}: {e}")
                             # 오류 발생 시 해당 트럭을 강제 종료하거나 다른 오류 처리 로직 추가 가능
                             # truck.stop() # 예: 오류 발생 시 강제 종료
 
             # 시간 증가
             self.current_time += self.unit_minutes
-            step_end_time = time.time()
+            #step_end_time = time.time()
 
             # 스텝별 정보 출력 (너무 자주 출력되면 성능에 영향 줄 수 있음)
             #print(f"  스텝 {step_num + 1}/{total_steps} 완료. 현재 시뮬레이션 시간: {self.current_time - self.unit_minutes:.0f}분. 활성 트럭: {len(self.trucks)}. 스텝 소요 시간: {step_end_time - step_start_time:.3f}초.")
 
-        loop_end_time = time.time()
-        print(f"--- 시뮬레이션 주 루프 종료 ({loop_end_time - run_start_time:.2f}초 소요) ---")
+        #loop_end_time = time.time()
+        #print(f"--- 시뮬레이션 주 루프 종료 ({loop_end_time - run_start_time:.2f}초 소요) ---")
         # 루프 종료 직후의 시간은 self.current_time 이지만, 실제 시뮬레이션 상 마지막으로 "처리된" 시간은 그 이전임
-        print(f"최종 시뮬레이션 시간 도달 (처리 완료된 시간): {self.current_time - self.unit_minutes:.0f}분")
+        #print(f"최종 시뮬레이션 시간 도달 (처리 완료된 시간): {self.current_time - self.unit_minutes:.0f}분")
 
 
         # --- 최종 정리 단계 ---
-        print(f"\n--- 시뮬레이션 최종 정리 시작 ---")
+        #print(f"\n--- 시뮬레이션 최종 정리 시작 ---")
         # self.trucks 리스트는 Truck.stop()에 의해 변경되므로 복사본 사용
         final_cleanup_trucks = list(self.trucks)
         cleaned_up_count = 0
         if not final_cleanup_trucks:
-            print("  정리할 트럭 없음 (모든 트럭이 이미 stopped 상태이거나 제거됨).")
+            pass
+            #print("  정리할 트럭 없음 (모든 트럭이 이미 stopped 상태이거나 제거됨).")
         else:
-            print(f"  정리 대상 트럭 수 (루프 종료 후): {len(final_cleanup_trucks)}")
+            #print(f"  정리 대상 트럭 수 (루프 종료 후): {len(final_cleanup_trucks)}")
             for truck_to_cleanup in final_cleanup_trucks:
                 # truck.stop() 내부에서 self.status를 'stopped'로 먼저 바꾸므로 중복 호출은 방지됨.
                 if truck_to_cleanup.status != 'stopped':
-                    print(f"  최종 정리: 트럭 {truck_to_cleanup.unique_id} (상태: {truck_to_cleanup.status}, 현재 SOC: {truck_to_cleanup.SOC:.2f}%, 최종 활성화 예정 시간: {truck_to_cleanup.next_activation_time:.2f}분) 강제 종료 중...")
-                    try:
+                    truck_to_cleanup.stop() 
+                    cleaned_up_count +=1
+                    #print(f"  최종 정리: 트럭 {truck_to_cleanup.unique_id} (상태: {truck_to_cleanup.status}, 현재 SOC: {truck_to_cleanup.SOC:.2f}%, 최종 활성화 예정 시간: {truck_to_cleanup.next_activation_time:.2f}분) 강제 종료 중...")
+                    #try:
                         # truck.stop()은 Truck 내부의 is_time_over와 유사한 역할을 여기서 수행
                         # Truck.stop()은 내부적으로 self.model.remove_truck(self)를 호출
-                        truck_to_cleanup.stop() 
-                        cleaned_up_count +=1
-                    except Exception as e:
-                        print(f"ERROR: Truck {truck_to_cleanup.unique_id} final stop failed: {e}")
+                        #truck_to_cleanup.stop() 
+                        #cleaned_up_count +=1
+                    #except Exception as e:
+                        #print(f"ERROR: Truck {truck_to_cleanup.unique_id} final stop failed: {e}")
                 # else: # 이미 stopped 상태인 경우 (정상 종료 또는 이전 스텝에서 stop됨)
                     # print(f"  정보: 트럭 {truck_to_cleanup.unique_id}는 이미 'stopped' 상태입니다.")
 
 
-        if cleaned_up_count > 0:
-            print(f"--- 최종 정리 완료 ({cleaned_up_count}대 트럭 강제 종료) ---")
-        else:
-            print(f"--- 최종 정리 완료 (추가로 강제 종료된 트럭 없음) ---")
+        #if cleaned_up_count > 0:
+            #print(f"--- 최종 정리 완료 ({cleaned_up_count}대 트럭 강제 종료) ---")
+        #else:
+            #print(f"--- 최종 정리 완료 (추가로 강제 종료된 트럭 없음) ---")
         
-        print(f"시뮬레이션 종료 후 최종 활성 트럭 수: {len(self.trucks)}") # 최종 확인
+        #print(f"시뮬레이션 종료 후 최종 활성 트럭 수: {len(self.trucks)}") # 최종 확인
 
-        run_end_time = time.time() # 실제 run_simulation 종료 시간
-        print(f"--- 시뮬레이션 전체 로직 종료 ({run_end_time - run_start_time:.2f}초 소요) ---")
+        #run_end_time = time.time() # 실제 run_simulation 종료 시간
+        #print(f"--- 시뮬레이션 전체 로직 종료 ({run_end_time - run_start_time:.2f}초 소요) ---")
 
 
 
@@ -208,8 +212,8 @@ class Simulator:
             ].copy()
 
         of = self.calculate_of()
-        analysis_end_time = time.time()
-        print(f"--- 결과 분석 완료 ({analysis_end_time - analysis_start_time:.2f}초 소요) ---")
+        #analysis_end_time = time.time()
+        #print(f"--- 결과 분석 완료 ({analysis_end_time - analysis_start_time:.2f}초 소요) ---")
         return of
 
 
@@ -364,13 +368,13 @@ class Simulator:
         # 결과 출력
         truck_penalty = penalty_df['truck_penalty'].iloc[0] if not penalty_df.empty else 0
         charger_penalty = penalty_df['charger_penalty'].iloc[0] if not penalty_df.empty else 0
-        print(f"\n--- 재무 요약 ---")
-        print(f"총 수익: {round(total_revenue)}")
-        print(f"총 운영비(OPEX): {round(total_opex)}")
-        print(f"총 자본비(CAPEX): {round(total_capex)}")
-        print(f"총 위약금: {round(total_penalty)} (트럭: {round(truck_penalty)}, 충전기: {round(charger_penalty)})")
-        print(f"목적 함수 값 (OF): {of}")
-        print(f"-------------------")
+        #print(f"\n--- 재무 요약 ---")
+        #print(f"총 수익: {round(total_revenue)}")
+        #print(f"총 운영비(OPEX): {round(total_opex)}")
+        #print(f"총 자본비(CAPEX): {round(total_capex)}")
+        #print(f"총 위약금: {round(total_penalty)} (트럭: {round(truck_penalty)}, 충전기: {round(charger_penalty)})")
+        #print(f"목적 함수 값 (OF): {of}")
+        #print(f"-------------------")
 
         return of
 
@@ -401,26 +405,26 @@ def run_simulation(car_paths_df, station_df, unit_minutes, simulating_hours, num
     """
     시뮬레이션을 준비, 실행하고 최종 OF 값을 반환합니다. 실행 시간도 측정합니다.
     """
-    overall_start_time = time.time()
-    print("\n=== 시뮬레이션 시작 ===") 
+    #overall_start_time = time.time()
+    #print("\n=== 시뮬레이션 시작 ===") 
     sim = Simulator(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers)
     
-    prepare_start = time.time()
+    #prepare_start = time.time()
     sim.prepare_simulation()
-    prepare_end = time.time()
-    print(f"--- 시뮬레이션 준비 완료 ({prepare_end - prepare_start:.2f}초 소요) ---") 
+    #prepare_end = time.time()
+    #print(f"--- 시뮬레이션 준비 완료 ({prepare_end - prepare_start:.2f}초 소요) ---") 
 
-    run_start = time.time()
+    #run_start = time.time()
     sim.run_simulation()
-    run_end = time.time()
+    #run_end = time.time()
 
-    analyze_start = time.time()
+    #analyze_start = time.time()
     of = sim.analyze_results()
-    analyze_end = time.time()
+    #analyze_end = time.time()
 
-    overall_end_time = time.time()
-    total_duration = overall_end_time - overall_start_time
-    print(f"\n=== 총 실행 시간: {total_duration:.2f}초 ({total_duration/60:.2f}분) ===") 
+    #overall_end_time = time.time()
+    #total_duration = overall_end_time - overall_start_time
+    #print(f"\n=== 총 실행 시간: {total_duration:.2f}초 ({total_duration/60:.2f}분) ===") 
     return of
 
 def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
@@ -428,8 +432,8 @@ def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
     차량 경로 데이터(Parquet 형식)를 로드하고 샘플링하는 함수.
     파일/데이터 관련 오류가 발생하지 않는다고 가정합니다.
     """
-    load_start_time = time.time()
-    print(f"--- 차량 경로 데이터 로딩 시작 (목표 트럭 수: {number_of_trucks}) ---") 
+    #load_start_time = time.time()
+    #print(f"--- 차량 경로 데이터 로딩 시작 (목표 트럭 수: {number_of_trucks}) ---") 
 
     # 1. 날짜 폴더 선택
     subfolders = [d for d in os.listdir(car_paths_folder)
@@ -438,7 +442,7 @@ def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
          raise FileNotFoundError(f"{car_paths_folder} 에서 'YYYY-MM-DD' 형식의 하위 폴더를 찾을 수 없습니다.")
     random_subfolder = random.choice(subfolders)
     selected_folder_path = os.path.join(car_paths_folder, random_subfolder)
-    print(f"  선택된 날짜 폴더: {random_subfolder}") 
+    #print(f"  선택된 날짜 폴더: {random_subfolder}") 
 
     # 2. 전체 OBU_ID 및 AREA_ID 정보 수집
     parquet_files = []
@@ -447,7 +451,7 @@ def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
     if not files_in_folder:
          raise FileNotFoundError(f"{selected_folder_path} 에서 .parquet 파일을 찾을 수 없습니다.")
     
-    print(f"  OBU/AREA 정보 수집 중...") 
+    #print(f"  OBU/AREA 정보 수집 중...") 
     for file in files_in_folder:
         file_path = os.path.join(selected_folder_path, file)
         parquet_files.append(file_path)
@@ -463,7 +467,7 @@ def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
     all_obu_ids = set(all_obu_df['OBU_ID'])
     unique_area_ids = all_obu_df['AREA_ID'].unique()
     actual_num_areas = len(unique_area_ids)
-    print(f"  총 {len(all_obu_ids)}개의 고유 OBU_ID와 {actual_num_areas}개의 고유 AREA_ID 발견.") 
+    #print(f"  총 {len(all_obu_ids)}개의 고유 OBU_ID와 {actual_num_areas}개의 고유 AREA_ID 발견.") 
 
     # 3. OBU_ID 샘플링
     selected_obu_ids = set()
@@ -496,12 +500,12 @@ def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
         selected_obu_ids -= set(ids_to_remove)
 
     selected_obu_ids_set = selected_obu_ids 
-    print(f"  로드할 OBU_ID {len(selected_obu_ids_set)}개 선택 완료.") 
+    #print(f"  로드할 OBU_ID {len(selected_obu_ids_set)}개 선택 완료.") 
 
     # 4. 선택된 OBU_ID 데이터 로드
     car_paths_list = []
     read_start_time = time.time()
-    print(f"  선택된 OBU_ID 데이터 로딩 중...") 
+    #print(f"  선택된 OBU_ID 데이터 로딩 중...") 
     for file_path in parquet_files:
         filters = [('OBU_ID', 'in', list(selected_obu_ids_set))] 
         df_filtered = pd.read_parquet(file_path, engine='pyarrow', filters=filters) 
@@ -509,18 +513,18 @@ def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
         if not df_filtered.empty:
             car_paths_list.append(df_filtered)
     read_end_time = time.time()
-    print(f"  데이터 로딩 완료 ({read_end_time - read_start_time:.2f}초 소요).") 
+    #print(f"  데이터 로딩 완료 ({read_end_time - read_start_time:.2f}초 소요).") 
 
     if not car_paths_list:
         raise ValueError("선택된 OBU_ID에 대한 데이터를 로드하지 못했습니다.")
 
     # 5. 데이터 병합
-    concat_start_time = time.time()
+    #concat_start_time = time.time()
     car_paths_df = pd.concat(car_paths_list, ignore_index=True)
     del car_paths_list 
     gc.collect()
-    concat_end_time = time.time()
-    print(f"  데이터 병합 완료 ({concat_end_time - concat_start_time:.2f}초 소요).") 
+    #concat_end_time = time.time()
+    #print(f"  데이터 병합 완료 ({concat_end_time - concat_start_time:.2f}초 소요).") 
 
     # 6. 데이터 전처리
     preprocess_start_time = time.time()
@@ -531,16 +535,16 @@ def load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33):
     original_truck_count = car_paths_df['OBU_ID'].nunique()
     car_paths_df.dropna(subset=['START_TIME_MINUTES'], inplace=True)
     final_truck_count = car_paths_df['OBU_ID'].nunique()
-    if original_truck_count != final_truck_count:
-        print(f"  [정보] 유효하지 않은 시작 시간으로 인해 {original_truck_count - final_truck_count}개 트럭 경로 제거됨.") 
+    #if original_truck_count != final_truck_count:
+        #print(f"  [정보] 유효하지 않은 시작 시간으로 인해 {original_truck_count - final_truck_count}개 트럭 경로 제거됨.") 
     
-    preprocess_end_time = time.time()
-    print(f"  데이터 전처리 완료 ({preprocess_end_time - preprocess_start_time:.2f}초 소요).") 
+    #preprocess_end_time = time.time()
+    #print(f"  데이터 전처리 완료 ({preprocess_end_time - preprocess_start_time:.2f}초 소요).") 
 
     # 7. 최종 반환
-    load_end_time = time.time()
-    print(f"--- 차량 경로 데이터 로딩 완료 (총 {load_end_time - load_start_time:.2f}초 소요) ---") 
-    print(f"  최종 {final_truck_count}개 트럭 경로 데이터 반환.") 
+    #load_end_time = time.time()
+    #print(f"--- 차량 경로 데이터 로딩 완료 (총 {load_end_time - load_start_time:.2f}초 소요) ---") 
+    #print(f"  최종 {final_truck_count}개 트럭 경로 데이터 반환.") 
     return car_paths_df
 
 
@@ -557,24 +561,24 @@ def load_station_df(station_file_path):
 
 # 메인 함수 (스크립트 실행 시 호출)
 if __name__ == '__main__':
-    car_paths_folder = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_stop_added)"
-    station_file_path = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
+    car_paths_folder = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/simulator/Trajectory(DAY_stop_added)"
+    station_file_path = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/simulator/Final_Candidates_Selected.csv"
 
     simulating_hours = 36
     unit_time = 20 
-    number_of_trucks = 7062
+    number_of_trucks = 7262
     number_of_max_chargers = 2000 
 
-    print("--- 데이터 로딩 시작 ---") 
+    #print("--- 데이터 로딩 시작 ---") 
     data_load_start = time.time()
     car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33)
     station_df = load_station_df(station_file_path)
     data_load_end = time.time()
-    print(f"--- 데이터 로딩 완료 ({data_load_end - data_load_start:.2f}초 소요) ---") 
+    #print(f"--- 데이터 로딩 완료 ({data_load_end - data_load_start:.2f}초 소요) ---") 
 
     # 데이터 로딩 성공 여부 확인 (데이터가 비어있지 않은지)
     if car_paths_df is not None and not car_paths_df.empty and station_df is not None and not station_df.empty:
         gc.collect() 
         run_simulation(car_paths_df, station_df, unit_time, simulating_hours, number_of_trucks, number_of_max_chargers)
-    else:
-        print("\n--- 데이터 로딩 실패 또는 유효한 데이터 없음으로 시뮬레이션 중단 ---") 
+    #else:
+        #print("\n--- 데이터 로딩 실패 또는 유효한 데이터 없음으로 시뮬레이션 중단 ---") 
