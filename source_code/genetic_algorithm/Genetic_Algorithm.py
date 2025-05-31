@@ -9,6 +9,8 @@ import Simulator_for_day as si
 from multiprocessing import Pool, cpu_count
 import logging
 from collections import Counter
+import lightgbm as lgb
+import joblib
 
 path_for_car = r"C:\Users\yemoy\SEM_화물차충전소\drive-download-20241212T004036Z-001"
 path_for_car_oneday =r"C:\Users\yemoy\SEM_화물차충전소\경로폴더"
@@ -82,7 +84,7 @@ def evaluate_individual(args):
     return (index, fitness_value)
 
 
-def fitness_func(population, station_df, path_history, pool):
+def fitness_func(population, station_df, path_history):
     """시뮬레이션에서 리턴되는 값들을 통해 각 솔루션의 적합도를 평가하는 함수."""
     car_paths_folder = path_for_car  
     car_paths_df = si.load_car_path_df(car_paths_folder, TRUCK_NUMBERS)
@@ -99,21 +101,23 @@ def fitness_func(population, station_df, path_history, pool):
     
     while retry_count < max_retries:
         try:
-            # 기존 pool 사용
-            results = list(pool.imap(evaluate_individual, args_list))
             
-            # 결과 정렬
-            sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
-            sorted_indices = [x[0] for x in sorted_results]
-            sorted_population = [population[i] for i in sorted_indices]
+            with Pool(processes=cpu_count()) as pool:
+                results = list(pool.imap(evaluate_individual, args_list))
+                
+                # 결과 정렬
+                sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
+                sorted_indices = [x[0] for x in sorted_results]
+                sorted_population = [population[i] for i in sorted_indices]
 
-            print("\n모든 작업이 완료되었습니다.")
+                print("\n모든 작업이 완료되었습니다.")
 
-            # 적합도 값 추출
-            fitness_values = [
-                fitness if fitness is not None else -np.inf for _, fitness in sorted_results  
-            ]
-            return fitness_values, sorted_population
+                # 적합도 값 추출
+                fitness_values = [
+                    fitness if fitness is not None else -np.inf for _, fitness in sorted_results  
+                ]
+
+                return fitness_values, sorted_population
             
         except Exception as e:
             retry_count += 1
@@ -125,6 +129,54 @@ def fitness_func(population, station_df, path_history, pool):
 
     logging.error("Max retries reached. Exiting.")
     return [0] * len(population)
+
+
+def surrogate_fitness_func(population):
+    lgbm_model_path = r"C:\Users\yemoy\SEM_화물차충전소\lgbm_model.pkl"
+    surrogate_lgbm = joblib.load(lgbm_model_path)
+    
+    def evaluate_individual_surrogate(args):
+        """개별 솔루션을 대리 모델로 평가하는 함수"""
+        individual, idx = args
+        try:
+            # 500개 충전소 설치 정보를 LightGBM 입력 형태로 변환
+            features = np.array(individual).reshape(1, -1)
+            
+            # 대리 모델로 적합도 예측
+            fitness = surrogate_lgbm.predict(features)[0]
+            
+            return (idx, fitness)
+            
+        except Exception as e:
+            print(f"Error evaluating individual {idx}: {e}")
+            return (idx, -np.inf)
+    
+    # 병렬 처리를 위한 인자 리스트 생성 (196개 개체)
+    args_list = [
+        (individual, idx)
+        for idx, individual in enumerate(population)
+    ]
+    
+    try:
+        with Pool(processes=cpu_count()) as pool:
+            results = list(pool.imap(evaluate_individual_surrogate, args_list))
+            
+            sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
+            sorted_indices = [x[0] for x in sorted_results]
+            sorted_population = [population[i] for i in sorted_indices]
+            
+            print("\nsurrogate 모델을 통한 평가 완료.")
+            
+            fitness_values = [
+                fitness if fitness is not None else -np.inf for _, fitness in sorted_results
+            ] 
+            return fitness_values, sorted_population
+            
+    except Exception as e:
+        print(f"Surrogate model evaluation failed: {e}")
+        return [0] * len(population), population
+
+
 
 
 
@@ -161,10 +213,10 @@ def choice_gene_tournament_no_duplicate(population, tournament_size, num_parents
     # 3. 토너먼트 선택을 통해 부모 선택
     while len(selected_parents) < num_parents and len(remain_indices) > 0:
         # 3-1. 현재 토너먼트 크기 결정
-        current_t_size = min(tournament_size, len(remain_indices))  # 남은 인덱스가 tournament_size보다 적으면, 남은 인덱스 수를 사용
+        current_t_size = min(tournament_size, len(remain_indices))  
 
         # 3-2. 토너먼트 참가자 무작위 선택
-        contestants_indices = random.sample(remain_indices, k=current_t_size)  # remain_indices에서 current_t_size만큼 무작위로 인덱스를 선택
+        contestants_indices = random.sample(remain_indices, k=current_t_size)  
 
         # 3-3. DataFrame에서 토너먼트 수행
         contestants_df = df.loc[contestants_indices]  # 선택된 인덱스에 해당하는 행만 추출하여 새로운 DataFrame 생성
@@ -286,7 +338,7 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, initial_chargers, 
 
     # 1. crossovered를 DataFrame으로 변환하고 ID 열 추가
     df = pd.DataFrame(crossovered)
-    df['id'] = range(len(df))  # 새로운 ID 열 추가
+    df['id'] = range(len(df))  
 
     # 2. 중복 개체 확인 및 ID 그룹화
     duplicates = df.groupby(list(range(num_candi)))['id'].apply(list)
@@ -295,13 +347,12 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, initial_chargers, 
     unique_indices = df.groupby(list(range(num_candi)))['id'].apply(list)
     unique_indices = unique_indices[unique_indices.str.len() == 1].to_dict()
 
-    # 중복이 없는 개체의 인덱스 리스트를 생성합니다.
+
     unique_indices = [idx for indices in unique_indices.values() for idx in indices]
 
-    # num_genes_to_change 초기화 
     num_genes_to_change = 0
 
-    # 3. 중복 개체 처리
+ 
     for ind, indices in duplicates.items():
         num_duplicates = len(indices) - 1  # 자신(원본)을 제외한 중복 개체 수
 
@@ -309,7 +360,7 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, initial_chargers, 
         original_genome = df.loc[df['id'] == indices[0], list(range(num_candi))].iloc[0].values
         max_gene = np.max(original_genome)
 
-        # 3-1. 유전자 일부 변경 (중복 개체 수만큼 변경, 최대 num_candi 절반까지)
+      
         # 중복된 해의 일부 유전자를 무작위로 변경 (여기서 num_duplicates 사용)
         num_genes_to_change = int(min(num_duplicates*MUTATION_GENES_MULTIPLE*(round((abs(GENERATIONS-adaptive_constant)/GENERATIONS)*0.9+0.1, 4)), num_candi // 2))
 
@@ -402,188 +453,188 @@ def genetic_algorithm():
 
     best_individual = None  # 역대 최고 개체 정보 저장 변수 초기화
     last_generation_individuals = None  # 마지막 세대 개체 정보 저장 변수 초기화
-    with Pool(processes=cpu_count()) as pool:
-        for generation in range(GENERATIONS):
-            print(f"\n세대 {generation + 1}/{GENERATIONS} 진행 중...")
 
-            if generation == 0:
-                population = station_gene_initial(POPULATION_SIZE, NUM_CANDIDATES, INITIAL_CHARGERS)
-            else:
-                population = mutated
-            if generation == GENERATIONS:
-                print("지정된 세대의 연산이 종료되었으므로 계산 결과를 출력합니다")
+    for generation in range(GENERATIONS):
+        print(f"\n세대 {generation + 1}/{GENERATIONS} 진행 중...")
+
+        if generation == 0:
+            population = station_gene_initial(POPULATION_SIZE, NUM_CANDIDATES, INITIAL_CHARGERS)
+        else:
+            population = mutated
+
+        if generation == GENERATIONS - 1:
+            print("지정된 세대의 연산이 종료되었으므로 계산 결과를 출력합니다")
+            break
+
+        if generation % 5 == 0:
+            fitness_values, sorted_population = fitness_func(population, station_df, path_history)
+            print('시뮬레이터 기반 적합도 평가 완료')
+        else:
+            fitness_values, sorted_population = surrogate_fitness_func(population)
+            print('Surrogate 모델 기반 적합도 평가 완료')
+            
+        # 전체 적합도 값 저장
+        all_fitness_history.append(fitness_values)
+        print('적합도 값 저장 완료')
+
+        # 세대별 최소, 최대, 평균 적합도 저장
+        current_min = np.min(fitness_values)
+        current_max = np.max(fitness_values)
+        current_mean = np.mean(fitness_values)
+
+        min_fitness_history.append(current_min)
+        max_fitness_history.append(current_max)
+        mean_fitness_history.append(current_mean)
+
+        # 현재 세대의 최고 적합도 및 해당 개체
+        current_best_fitness = current_max
+        current_best_individual = sorted_population[0]  # 현재 세대 최고 개체
+        best_individual_history.append(current_best_individual)  # 최고 개체 저장
+        fitness_history.append(current_best_fitness)  # 최고 적합도 저장
+        current_best_chargers = np.sum(current_best_individual) # 현재 세대 최고 개체 충전기 수
+
+        print(f"세대 {generation + 1}의 최고 적합도: {current_best_fitness}")
+
+
+        # 수렴 체크를 위한 변수 초기화 (세대 10 이전에는 0으로 설정)
+        charger_change = 0
+        fitness_mean_change = 0
+        curr_10_mean = 0
+
+        # 수렴 체크 (새로운 방식)
+        if generation >= 10:  # 11개 세대(index 10) 이상의 데이터가 쌓여야 비교 가능
+            # 1. 충전기 개수 변화량 체크
+            prev_best_chargers = np.sum(best_individual_history[-2])  # 이전 세대 최고 개체 충전기 수
+            charger_change = (current_best_chargers - prev_best_chargers) / abs(prev_best_chargers)
+
+            # 2. 적합도 평균 변화량 체크
+            prev_10_fitness = fitness_history[-11:-1]  # 이전 10개 세대 최고 적합도 (현재 세대 미미포함)
+            curr_10_fitness = fitness_history[-10:]    # 현재 10개 세대 최고 적합도 (현재 세대 포함)
+
+            prev_10_mean = np.mean(prev_10_fitness)
+            curr_10_mean = np.mean(curr_10_fitness)
+
+            if prev_10_mean != 0:
+                fitness_mean_change = (curr_10_mean - prev_10_mean) / abs(prev_10_mean)
+
+            # no_improvement_count 증가/초기화 조건 추가
+            if generation >= CONVERGENCE_CHECK_START_GENERATIONS:
+                if abs(charger_change) <= 0.01 and abs(fitness_mean_change) <= 0.005:
+                    no_improvement_count += 1
+                    print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
+                    print(f"{no_improvement_count} 세대 동안 개선 없음")
+                else:
+                    no_improvement_count = 0  # 조건 불만족 시 초기화
+                    print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
+                    print(f"{no_improvement_count} 세대 동안 개선 없음")
+            else: # CONVERGENCE_CHECK_START_GENERATIONS 이전에는 카운트 변화 없음
+                print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
+                print(f"개선 여부 판단 유보 (세대 {generation+1}/{CONVERGENCE_CHECK_START_GENERATIONS})")
+
+
+            if no_improvement_count >= MAX_NO_IMPROVEMENT:  # 연속 MAX_NO_IMPROVEMENT 세대 동안 개선 없으면 종료
+                print(f"최적해 변화가 {MAX_NO_IMPROVEMENT} 세대 연속 없어 알고리즘을 종료합니다.")
+                convergence_df = pd.concat([convergence_df, pd.DataFrame({
+                    'Generation': [generation + 1],
+                    'Fitness_Mean': [curr_10_mean],
+                    'Fitness_Mean_Change': [fitness_mean_change],
+                    'Charger_Change': [charger_change],
+                    'Best_Fitness': [current_best_fitness],         # 현재 세대 최고 적합도
+                    'Best_Chargers': [current_best_chargers]        # 최고 적합도 개체의 충전기 수
+                })], ignore_index=True)
                 break
 
-            # 적합도 계산
-            fitness_values, sorted_population = fitness_func(population, station_df, path_history, pool)
-            print('적합도 평가 완료')
+        else: # 11개 세대가 쌓이지 않았을 경우
+            no_improvement_count = 0
+            print("변화량 측정을 위한 data 축적중")
 
-            # 전체 적합도 값 저장
-            all_fitness_history.append(fitness_values)
-            print('적합도 값 저장 완료')
-
-            # 세대별 최소, 최대, 평균 적합도 저장
-            current_min = np.min(fitness_values)
-            current_max = np.max(fitness_values)
-            current_mean = np.mean(fitness_values)
-
-            min_fitness_history.append(current_min)
-            max_fitness_history.append(current_max)
-            mean_fitness_history.append(current_mean)
-
-            # 현재 세대의 최고 적합도 및 해당 개체
-            current_best_fitness = current_max
-            current_best_individual = sorted_population[0]  # 현재 세대 최고 개체
-            best_individual_history.append(current_best_individual)  # 최고 개체 저장
-            fitness_history.append(current_best_fitness)  # 최고 적합도 저장
-            current_best_chargers = np.sum(current_best_individual) # 현재 세대 최고 개체 충전기 수
-
-            print(f"세대 {generation + 1}의 최고 적합도: {current_best_fitness}")
+        # convergence_df에 결과 저장
+        convergence_df = pd.concat([convergence_df, pd.DataFrame({
+            'Generation': [generation + 1],
+            'Fitness_Mean': [curr_10_mean],
+            'Fitness_Mean_Change': [fitness_mean_change],
+            'Charger_Change': [charger_change],
+            'Best_Fitness': [current_best_fitness],         # 현재 세대 최고 적합도
+            'Best_Chargers': [current_best_chargers]        # 최고 적합도 개체의 충전기 수
+        })], ignore_index=True)
 
 
-            # 수렴 체크를 위한 변수 초기화 (세대 10 이전에는 0으로 설정)
-            charger_change = 0
-            fitness_mean_change = 0
-            curr_10_mean = 0
+        # 역대 최고 개체 갱신
+        if current_best_fitness > best_fitness:
+            best_fitness = current_best_fitness
+            best_individual = current_best_individual
+            print("역대 최고 개체 갱신")
 
-            # 수렴 체크 (새로운 방식)
-            if generation >= 10:  # 11개 세대(index 10) 이상의 데이터가 쌓여야 비교 가능
-                # 1. 충전기 개수 변화량 체크
-                prev_best_chargers = np.sum(best_individual_history[-2])  # 이전 세대 최고 개체 충전기 수
-                charger_change = (current_best_chargers - prev_best_chargers) / abs(prev_best_chargers)
+        # 마지막 세대 개체 정보 저장
+        if generation == GENERATIONS - 1:
+            last_generation_individuals = sorted_population
+            print("마지막 세대 개체 정보 저장")
 
-                # 2. 적합도 평균 변화량 체크
-                prev_10_fitness = fitness_history[-11:-1]  # 이전 10개 세대 최고 적합도 (현재 세대 미미포함)
-                curr_10_fitness = fitness_history[-10:]    # 현재 10개 세대 최고 적합도 (현재 세대 포함)
+        # 부모 선택
+        parents = choice_gene_tournament_no_duplicate(sorted_population, TOURNAMENT_SIZE, PARENTS_SIZE, fitness_values)
+        print('부모 선택 완료')
+        best_fitness_number_of_charger.append(np.sum(parents[0]))
 
-                prev_10_mean = np.mean(prev_10_fitness)
-                curr_10_mean = np.mean(curr_10_fitness)
+        if no_improvement_count >= 5 and immigration_count <= MAX_IMMIGRATIONS:
+            parents = immigration(parents, NUM_CANDIDATES, INITIAL_CHARGERS, generation)
+            immigration_count += 1
+            no_improvement_count = 0
+            print(f"이민자 연산 실행 ({immigration_count}/{MAX_IMMIGRATIONS})")  
+            print("수렴 카운트 초기화")
 
-                if prev_10_mean != 0:
-                    fitness_mean_change = (curr_10_mean - prev_10_mean) / abs(prev_10_mean)
+        # 교차
+        children = crossover_elitsm(parents, NUM_CANDIDATES, POPULATION_SIZE, generation)
+        print('교차 연산 완료')
 
-                # no_improvement_count 증가/초기화 조건 추가
-                if generation >= CONVERGENCE_CHECK_START_GENERATIONS:
-                    if abs(charger_change) <= 0.01 and abs(fitness_mean_change) <= 0.005:
-                        no_improvement_count += 1
-                        print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
-                        print(f"{no_improvement_count} 세대 동안 개선 없음")
-                    else:
-                        no_improvement_count = 0  # 조건 불만족 시 초기화
-                        print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
-                        print(f"{no_improvement_count} 세대 동안 개선 없음")
-                else: # CONVERGENCE_CHECK_START_GENERATIONS 이전에는 카운트 변화 없음
-                    print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
-                    print(f"개선 여부 판단 유보 (세대 {generation+1}/{CONVERGENCE_CHECK_START_GENERATIONS})")
-
-
-                if no_improvement_count >= MAX_NO_IMPROVEMENT:  # 연속 MAX_NO_IMPROVEMENT 세대 동안 개선 없으면 종료
-                    print(f"최적해 변화가 {MAX_NO_IMPROVEMENT} 세대 연속 없어 알고리즘을 종료합니다.")
-                    convergence_df = pd.concat([convergence_df, pd.DataFrame({
-                        'Generation': [generation + 1],
-                        'Fitness_Mean': [curr_10_mean],
-                        'Fitness_Mean_Change': [fitness_mean_change],
-                        'Charger_Change': [charger_change],
-                        'Best_Fitness': [current_best_fitness],         # 현재 세대 최고 적합도
-                        'Best_Chargers': [current_best_chargers]        # 최고 적합도 개체의 충전기 수
-                    })], ignore_index=True)
-                    break
-
-            else: # 11개 세대가 쌓이지 않았을 경우
-                no_improvement_count = 0
-                print("변화량 측정을 위한 data 축적중")
-
-            # convergence_df에 결과 저장
-            convergence_df = pd.concat([convergence_df, pd.DataFrame({
-                'Generation': [generation + 1],
-                'Fitness_Mean': [curr_10_mean],
-                'Fitness_Mean_Change': [fitness_mean_change],
-                'Charger_Change': [charger_change],
-                'Best_Fitness': [current_best_fitness],         # 현재 세대 최고 적합도
-                'Best_Chargers': [current_best_chargers]        # 최고 적합도 개체의 충전기 수
-            })], ignore_index=True)
-
+        # 변이
+        mutated = mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, INITIAL_CHARGERS, generation)
+        print('변이 연산 완료')
 
         
 
+        best_fitness = max(max_fitness_history)  # 최고 적합도 갱신
+        # 수렴 정보 저장
+        # convergence_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\convergence_info_5%.csv", index=False, mode='w')
 
-            # 역대 최고 개체 갱신
-            if current_best_fitness > best_fitness:
-                best_fitness = current_best_fitness
-                best_individual = current_best_individual
-                print("역대 최고 개체 갱신")
+        # 중복 정보 저장
+        # duplicate_info_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\duplicate_info_5%.csv", index=False, mode='w')
+        print("세대별 중복 개체 정보를 duplicate_info.csv 파일로 저장")
 
-            # 마지막 세대 개체 정보 저장
-            if generation == GENERATIONS - 1:
-                last_generation_individuals = sorted_population
-                print("마지막 세대 개체 정보 저장")
-
-            # 부모 선택
-            parents = choice_gene_tournament_no_duplicate(sorted_population, TOURNAMENT_SIZE, PARENTS_SIZE, fitness_values)
-            print('부모 선택 완료')
-            best_fitness_number_of_charger.append(np.sum(parents[0]))
-
-            if no_improvement_count >= 5 and immigration_count <= MAX_IMMIGRATIONS:
-                parents = immigration(parents, NUM_CANDIDATES, INITIAL_CHARGERS, generation)
-                immigration_count += 1
-                no_improvement_count = 0
-                print(f"이민자 연산 실행 ({immigration_count}/{MAX_IMMIGRATIONS})")  
-                print("수렴 카운트 초기화")
-
-            # 교차
-            children = crossover_elitsm(parents, NUM_CANDIDATES, POPULATION_SIZE, generation)
-            print('교차 연산 완료')
-
-            # 변이
-            mutated = mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, INITIAL_CHARGERS, generation)
-            print('변이 연산 완료')
-
-            
-
-            best_fitness = max(max_fitness_history)  # 최고 적합도 갱신
-            # 수렴 정보 저장
-           # convergence_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\convergence_info_5%.csv", index=False, mode='w')
-
-            # 중복 정보 저장
-           # duplicate_info_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\duplicate_info_5%.csv", index=False, mode='w')
-            print("세대별 중복 개체 정보를 duplicate_info.csv 파일로 저장")
-
-            # 역대 최고 개체 및 마지막 세대 개체 정보 저장
-            if best_individual is not None:
-                best_individual_df = pd.DataFrame([best_individual],
-                                                columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
-                best_individual_df['Fitness'] = best_fitness
-                #best_individual_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\best_individual_5%.csv", index=False, mode='w')
-                print("역대 최고 개체 정보를 best_individual.csv 파일로 저장")
-
-            if last_generation_individuals is not None:
-                last_gen_df = pd.DataFrame(last_generation_individuals,
-                                        columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
-                last_gen_df['Fitness'] = all_fitness_history[-1]  # 마지막 세대의 적합도 리스트 추가
-               # last_gen_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\last_generation_5%.csv", index=False, mode='w')
-                print("마지막 세대 개체 정보를 last_generation.csv 파일로 저장")
-
-            # 세대별 최고 개체 정보 저장
-            best_individuals_df = pd.DataFrame(best_individual_history,
+        # 역대 최고 개체 및 마지막 세대 개체 정보 저장
+        if best_individual is not None:
+            best_individual_df = pd.DataFrame([best_individual],
                                             columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
-            best_individuals_df['Generation'] = np.arange(1, len(best_individual_history) + 1)
-            #best_individuals_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\best_individuals_per_generation_5%.csv", index=False, mode='w')
-            print("세대별 최고 개체 정보를 best_individuals_per_generation.csv 파일에 저장")
+            best_individual_df['Fitness'] = best_fitness
+            #best_individual_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\best_individual_5%.csv", index=False, mode='w')
+            print("역대 최고 개체 정보를 best_individual.csv 파일로 저장")
 
-            result_dict = {
-                'Generation': np.arange(1, len(min_fitness_history) + 1),
-                'Min_fitness': min_fitness_history,
-                'Max_fitness': max_fitness_history,
-                'Mean_fitness': mean_fitness_history
-            }
-            result_df = pd.DataFrame(result_dict)
-            #result_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\ga_results.csv", index=False, mode='w')
-            print("각 세대별 fitness value를 csv파일로 저장")
+        if last_generation_individuals is not None:
+            last_gen_df = pd.DataFrame(last_generation_individuals,
+                                    columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
+            last_gen_df['Fitness'] = all_fitness_history[-1]  # 마지막 세대의 적합도 리스트 추가
+            # last_gen_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\last_generation_5%.csv", index=False, mode='w')
+            print("마지막 세대 개체 정보를 last_generation.csv 파일로 저장")
+
+        # 세대별 최고 개체 정보 저장
+        best_individuals_df = pd.DataFrame(best_individual_history,
+                                        columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
+        best_individuals_df['Generation'] = np.arange(1, len(best_individual_history) + 1)
+        #best_individuals_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\best_individuals_per_generation_5%.csv", index=False, mode='w')
+        print("세대별 최고 개체 정보를 best_individuals_per_generation.csv 파일에 저장")
+
+        result_dict = {
+            'Generation': np.arange(1, len(min_fitness_history) + 1),
+            'Min_fitness': min_fitness_history,
+            'Max_fitness': max_fitness_history,
+            'Mean_fitness': mean_fitness_history
+        }
+        result_df = pd.DataFrame(result_dict)
+        #result_df.to_csv(r"C:\Users\user\Desktop\화물차 충전소\ga_results.csv", index=False, mode='w')
+        print("각 세대별 fitness value를 csv파일로 저장")
 
     print("\n유전 알고리즘 종료")
     print(f"최종 세대 수: {generation + 1}")
     print(f"최고 적합도: {best_fitness}")
-
    
     # 그래프 출력
     gens = np.arange(1, len(fitness_history) + 1)
