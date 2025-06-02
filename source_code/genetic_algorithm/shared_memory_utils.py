@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings('ignore', message="resource_tracker:.*No such file or directory.*", category=UserWarning)
+
 import pandas as pd
 import numpy as np
 from multiprocessing import shared_memory

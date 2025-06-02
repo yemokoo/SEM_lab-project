@@ -1,9 +1,4 @@
 #화물차 궤적 데이터 기반 시뮬레이션 개발 및 전기차 충전소 위치 및 규모 최적화
-import warnings
-
-# resource_tracker의 'No such file or directory' 관련 UserWarning만 무시
-warnings.filterwarnings('ignore', message="resource_tracker:.*No such file or directory.*", category=UserWarning)
-
 import os
 import traceback
 
@@ -40,14 +35,14 @@ np.random.seed(42)
 #100개의 솔루션 -> 토너먼트로 25개 선정 -> 25개중 상위 4개는 엘리티즘 -> 1등을 제외한 24개에 대하여 교차를 통해 96개의 해 생성  -> 100개의 다음세대 솔루션 생성.
 #해당 사항으로 우선 알고리즘이 개발되어 일단은 한 세대당 100개의 솔루션이 있음을 가정하고 시뮬레이터에 적용하길 바랍니다.
 # 유전 알고리즘 파라미터 설정
-CORE_NUM = 150  # 코어 수
-POPULATION_SIZE = 150  # 개체군 크기
+CORE_NUM = 180  # 코어 수
+POPULATION_SIZE = 180  # 개체군 크기
 GENERATIONS = 10000  # 최대 세대 수 (필요 시 무시됨)
 TOURNAMENT_SIZE = 4 # 토너먼트 크기
-MUTATION_RATE = 0.015  # 변이 확률
+MUTATION_RATE = 0.1  # 변이 확률(기본 0.015)
 MUTATION_GENES_MULTIPLE = 20  # 중복된 해에 들어간 유전자 정보의 변이 배수
 NUM_CANDIDATES = 500 # 충전소 위치 후보지 개수
-CONVERGENCE_CHECK_START_GENERATIONS = 1000  # 수렴 체크 시작 세대
+CONVERGENCE_CHECK_START_GENERATIONS = 3000  # 수렴 체크 시작 세대(기본 1000)
 MAX_NO_IMPROVEMENT = 15  # 개선 없는 최대 세대 수
 INITIAL_CHARGERS = 2000 # 설치할 충전기의 대수 충전기 
 TOTAL_CHARGERS = 10000 # 총 충전기 대수
@@ -80,30 +75,30 @@ def evaluate_individual_shared(args):
     simulating_hours = 36  
     num_trucks = TRUCK_NUMBERS # GA.py의 전역변수
     
-    try:
+    #try:
         # 1. 공유 메모리에서 car_paths_df 재구성 및 복사
-        car_paths_df_copy = reconstruct_df_from_shared_memory(shm_infos_car_paths)
+    car_paths_df_copy = reconstruct_df_from_shared_memory(shm_infos_car_paths)
 
-        station_df_for_sim = worker_original_station_df.copy()
-        station_df_for_sim['num_of_charger'] = individual # 유전자 적용
+    station_df_for_sim = worker_original_station_df.copy()
+    station_df_for_sim['num_of_charger'] = individual # 유전자 적용
 
-        fitness_value = si.run_simulation( 
-            car_paths_df_copy,
-            station_df_for_sim,
-            unit_minutes,
-            simulating_hours,
-            num_trucks,
-            TOTAL_CHARGERS # GA.py의 전역변수
-        )
+    fitness_value = si.run_simulation( 
+        car_paths_df_copy,
+        station_df_for_sim,
+        unit_minutes,
+        simulating_hours,
+        num_trucks,
+        TOTAL_CHARGERS # GA.py의 전역변수
+    )
 
-        # 사용한 DataFrame 명시적 삭제
-        del car_paths_df_copy
-        del station_df_for_sim
-        gc.collect()
+    # 사용한 DataFrame 명시적 삭제
+    del car_paths_df_copy
+    del station_df_for_sim
+    gc.collect()
 
-        return (index, fitness_value)
-
-    except Exception as e:
+    return (index, fitness_value)
+    '''    
+        except Exception as e:
         # 작업자 프로세스에서 예외 발생 시 모든 관련 정보 출력/로깅
         print(f"CRITICAL PYTHON EXCEPTION in worker process (PID: {os.getpid()}) ")
         print(f"Individual index processed: {index} ")
@@ -117,11 +112,12 @@ def evaluate_individual_shared(args):
         # 오류 발생을 알리고 GA가 비정상적으로 멈추는 것을 방지하기 위해
         # 매우 낮은 적합도 값을 반환합니다.
         raise
+    '''
+
 
 worker_original_station_df = None
 
 def init_worker_station(original_station_df_data):
-    warnings.filterwarnings('ignore', message="resource_tracker:.*No such file or directory.*", category=UserWarning)
     global worker_original_station_df
     # print(f"Worker {os.getpid()} initializing with station_df...")
     worker_original_station_df = original_station_df_data
@@ -153,31 +149,31 @@ def fitness_func(population, original_station_df_ref_for_fitness_func, path_hist
 
     results = [] # imap 결과를 담을 리스트
 
-    try:
-        # 1. 현재 세대의 car_paths_df를 공유 메모리에 올림
-        # unique_prefix는 세대별로 달라야 하므로 current_generation_number 사용
-        shm_unique_prefix = f"gen{current_generation_number}"
-        shm_infos_car_paths, shm_objects_to_cleanup_in_main = put_df_to_shared_memory(car_paths_df_current_gen, unique_prefix=shm_unique_prefix)
-        
-        del car_paths_df_current_gen # 공유 메모리에 올렸으므로 원본은 삭제 (메모리 절약)
-        gc.collect()
+    #try:
+    # 1. 현재 세대의 car_paths_df를 공유 메모리에 올림
+    # unique_prefix는 세대별로 달라야 하므로 current_generation_number 사용
+    shm_unique_prefix = f"gen{current_generation_number}"
+    shm_infos_car_paths, shm_objects_to_cleanup_in_main = put_df_to_shared_memory(car_paths_df_current_gen, unique_prefix=shm_unique_prefix)
+    
+    del car_paths_df_current_gen # 공유 메모리에 올렸으므로 원본은 삭제 (메모리 절약)
+    gc.collect()
 
-        # 2. 워커에 전달할 인자 리스트 생성
-        #    individual (유전자), idx (인덱스), shm_infos_car_paths (공유 car_paths_df 정보)
-        #    station_df는 워커가 initializer를 통해 worker_original_station_df를 사용함
-        args_list = [
-            (individual, idx, shm_infos_car_paths)
-            for idx, individual in enumerate(population)
-        ]
+    # 2. 워커에 전달할 인자 리스트 생성
+    #    individual (유전자), idx (인덱스), shm_infos_car_paths (공유 car_paths_df 정보)
+    #    station_df는 워커가 initializer를 통해 worker_original_station_df를 사용함
+    args_list = [
+        (individual, idx, shm_infos_car_paths)
+        for idx, individual in enumerate(population)
+    ]
 
-        # 3. 멀티프로세싱 실행 (pool.imap 사용)
-        map_start_time = time.time()
-        calculated_chunksize = max(1, len(population) // CORE_NUM) if CORE_NUM > 0 else 1
+    # 3. 멀티프로세싱 실행 (pool.imap 사용)
+    map_start_time = time.time()
+    calculated_chunksize = max(1, len(population) // CORE_NUM) if CORE_NUM > 0 else 1
 
-        results = list(pool.imap(evaluate_individual_shared, args_list, chunksize=calculated_chunksize))
-        map_end_time = time.time()
-        print(f"  - 멀티프로세싱 시간: {map_end_time - map_start_time:.2f}초")
-
+    results = list(pool.imap(evaluate_individual_shared, args_list, chunksize=calculated_chunksize))
+    map_end_time = time.time()
+    print(f"  - 멀티프로세싱 시간: {map_end_time - map_start_time:.2f}초")
+    '''
     except Exception as e:
         print(f"ERROR in fitness_func during shared memory setup or pool.imap: {e}")
         print(f"!!! Exception Type: {type(e)} !!!")
@@ -199,7 +195,7 @@ def fitness_func(population, original_station_df_ref_for_fitness_func, path_hist
     if not results: # imap에서 에러가 나서 비어있을 경우
         print("Warning: pool.imap returned empty results.")
         return [-np.inf] * len(population), population
-
+    '''
     # 결과 정렬 (기존 로직)
     sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
     sorted_indices = [x[0] for x in sorted_results]
@@ -450,7 +446,6 @@ def immigration(population, num_candi, initial_chargers, generation):
     return population
 
 
-
 def genetic_algorithm():
     no_improvement_count = 0
     best_fitness = float('-inf')
@@ -492,18 +487,18 @@ def genetic_algorithm():
 
         # --- 주요 변경 사항: 매 세대마다 Pool 생성 ---
         with Pool(processes=CORE_NUM,
-                  initializer=init_worker_station,
-                  initargs=(original_station_df,)) as pool: # original_station_df는 루프 밖에서 한 번만 로드
-            warnings.filterwarnings('ignore', message="resource_tracker:.*No such file or directory.*", category=UserWarning)
+                initializer=init_worker_station,
+                initargs=(original_station_df,)) as pool: # original_station_df는 루프 밖에서 한 번만 로드
+            
             if generation == 0:
                 population = station_gene_initial(POPULATION_SIZE, NUM_CANDIDATES, INITIAL_CHARGERS)
             else:
                 population = mutated # 이전 세대의 mutated 결과를 사용
 
             if generation == GENERATIONS: # 이 조건은 GENERATIONS 루프 때문에 사실상 도달하기 어려울 수 있습니다.
-                                         # 루프 조건이 range(GENERATIONS)이므로 generation은 GENERATIONS-1까지 갑니다.
-                                         # 만약 GENERATIONS번째 '세대'라는 표현을 원한다면 range(GENERATIONS+1) 등을 고려해야 합니다.
-                                         # 혹은 루프 종료 후 처리 로직으로 빼는 것이 명확합니다.
+                                        # 루프 조건이 range(GENERATIONS)이므로 generation은 GENERATIONS-1까지 갑니다.
+                                        # 만약 GENERATIONS번째 '세대'라는 표현을 원한다면 range(GENERATIONS+1) 등을 고려해야 합니다.
+                                        # 혹은 루프 종료 후 처리 로직으로 빼는 것이 명확합니다.
                 print("지정된 세대의 연산이 종료되었으므로 계산 결과를 출력합니다")
                 break # 루프를 빠져나감
 
@@ -668,7 +663,7 @@ def genetic_algorithm():
 
             if last_generation_individuals is not None:
                 last_gen_df = pd.DataFrame(last_generation_individuals,
-                                           columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
+                                        columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
                 last_gen_df['Fitness'] = all_fitness_history[-1]  # 마지막 세대의 적합도 리스트 추가
                 last_gen_df.to_csv(os.path.join(result_folder_path, "last_generation.csv"), index=False, mode='w')
                 print("마지막 세대 개체 정보를 last_generation.csv 파일로 저장")

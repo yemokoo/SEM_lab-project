@@ -22,7 +22,6 @@ warnings.filterwarnings(
     category=FutureWarning
 )
 
-
 class Simulator:
     """
     시뮬레이션 클래스 (최적화 및 로직 개선)
@@ -175,7 +174,7 @@ class Simulator:
         #print(f"시뮬레이션 종료 후 최종 활성 트럭 수: {len(self.trucks)}") # 최종 확인
 
         #run_end_time = time.time() # 실제 run_simulation 종료 시간
-        #print(f"--- 시뮬레이션 전체 로직 종료 ({run_end_time - run_start_time:.2f}초 소요) ---")
+         #print(f"--- 시뮬레이션 전체 로직 종료 ({run_end_time - run_start_time:.2f}초 소요) ---")
 
 
 
