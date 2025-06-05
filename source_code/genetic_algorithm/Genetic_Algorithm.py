@@ -1,5 +1,7 @@
 #화물차 궤적 데이터 기반 시뮬레이션 개발 및 전기차 충전소 위치 및 규모 최적화
+import glob
 import os
+import re
 import traceback
 
 # --- NumPy 및 관련 라이브러리 스레드 제한 설정 ---
@@ -20,6 +22,7 @@ import random
 import matplotlib.pyplot as plt
 import Simulator_for_day as si
 from multiprocessing import Pool, cpu_count
+import multiprocessing
 import logging
 from collections import Counter
 from shared_memory_utils import put_df_to_shared_memory, reconstruct_df_from_shared_memory, cleanup_shms_by_info
@@ -34,6 +37,7 @@ np.random.seed(42)
 
 #100개의 솔루션 -> 토너먼트로 25개 선정 -> 25개중 상위 4개는 엘리티즘 -> 1등을 제외한 24개에 대하여 교차를 통해 96개의 해 생성  -> 100개의 다음세대 솔루션 생성.
 #해당 사항으로 우선 알고리즘이 개발되어 일단은 한 세대당 100개의 솔루션이 있음을 가정하고 시뮬레이터에 적용하길 바랍니다.
+
 # 유전 알고리즘 파라미터 설정
 CORE_NUM = 180  # 코어 수
 POPULATION_SIZE = 180  # 개체군 크기
@@ -42,15 +46,16 @@ TOURNAMENT_SIZE = 4 # 토너먼트 크기
 MUTATION_RATE = 0.1  # 변이 확률(기본 0.015)
 MUTATION_GENES_MULTIPLE = 20  # 중복된 해에 들어간 유전자 정보의 변이 배수
 NUM_CANDIDATES = 500 # 충전소 위치 후보지 개수
-CONVERGENCE_CHECK_START_GENERATIONS = 3000  # 수렴 체크 시작 세대(기본 1000)
+CONVERGENCE_CHECK_START_GENERATIONS = 5000  # 수렴 체크 시작 세대(기본 1000)
 MAX_NO_IMPROVEMENT = 15  # 개선 없는 최대 세대 수
 INITIAL_CHARGERS = 2000 # 설치할 충전기의 대수 충전기 
 TOTAL_CHARGERS = 10000 # 총 충전기 대수
 PARENTS_SIZE = round(POPULATION_SIZE/2) # 부모의 수
-# 전동화율 가정(원본이 10%임)
-ELECTRIFICATION_RATE = 1.0
+ELECTRIFICATION_RATE = 1.0 # 전동화율 가정(원본이 10%임)
 TRUCK_NUMBERS = int(7262 * ELECTRIFICATION_RATE) # 전체 화물차 대수 / 7062대는 10%의 전동화율 기준 대수
 
+# 저장 세대 간격
+SAVE_INTERVAL = 100
 # 중복 정보를 저장할 DataFrame 초기화
 duplicate_info_df = pd.DataFrame(columns=['Generation', 'Solution', 'Indices', 'Count'])
 
@@ -97,22 +102,6 @@ def evaluate_individual_shared(args):
     gc.collect()
 
     return (index, fitness_value)
-    '''    
-        except Exception as e:
-        # 작업자 프로세스에서 예외 발생 시 모든 관련 정보 출력/로깅
-        print(f"CRITICAL PYTHON EXCEPTION in worker process (PID: {os.getpid()}) ")
-        print(f"Individual index processed: {index} ")
-        # 필요하다면 individual 데이터의 일부를 로깅하여 어떤 입력에서 오류가 발생했는지 추적
-        print(f"Individual data: {individual} ")
-        print(f"Exception Type: {type(e)} ")
-        print(f"Exception Message: {str(e)} ")
-        print(f"Traceback: ")
-        traceback.print_exc() # 오류 발생 지점의 전체 콜 스택(호출 순서)을 출력
-
-        # 오류 발생을 알리고 GA가 비정상적으로 멈추는 것을 방지하기 위해
-        # 매우 낮은 적합도 값을 반환합니다.
-        raise
-    '''
 
 
 worker_original_station_df = None
@@ -149,31 +138,31 @@ def fitness_func(population, original_station_df_ref_for_fitness_func, path_hist
 
     results = [] # imap 결과를 담을 리스트
 
-    #try:
-    # 1. 현재 세대의 car_paths_df를 공유 메모리에 올림
-    # unique_prefix는 세대별로 달라야 하므로 current_generation_number 사용
-    shm_unique_prefix = f"gen{current_generation_number}"
-    shm_infos_car_paths, shm_objects_to_cleanup_in_main = put_df_to_shared_memory(car_paths_df_current_gen, unique_prefix=shm_unique_prefix)
-    
-    del car_paths_df_current_gen # 공유 메모리에 올렸으므로 원본은 삭제 (메모리 절약)
-    gc.collect()
+    try:
+        # 1. 현재 세대의 car_paths_df를 공유 메모리에 올림
+        # unique_prefix는 세대별로 달라야 하므로 current_generation_number 사용
+        shm_unique_prefix = f"gen{current_generation_number}"
+        shm_infos_car_paths, shm_objects_to_cleanup_in_main = put_df_to_shared_memory(car_paths_df_current_gen, unique_prefix=shm_unique_prefix)
+        
+        del car_paths_df_current_gen # 공유 메모리에 올렸으므로 원본은 삭제 (메모리 절약)
+        gc.collect()
 
-    # 2. 워커에 전달할 인자 리스트 생성
-    #    individual (유전자), idx (인덱스), shm_infos_car_paths (공유 car_paths_df 정보)
-    #    station_df는 워커가 initializer를 통해 worker_original_station_df를 사용함
-    args_list = [
-        (individual, idx, shm_infos_car_paths)
-        for idx, individual in enumerate(population)
-    ]
+        # 2. 워커에 전달할 인자 리스트 생성
+        #    individual (유전자), idx (인덱스), shm_infos_car_paths (공유 car_paths_df 정보)
+        #    station_df는 워커가 initializer를 통해 worker_original_station_df를 사용함
+        args_list = [
+            (individual, idx, shm_infos_car_paths)
+            for idx, individual in enumerate(population)
+        ]
 
-    # 3. 멀티프로세싱 실행 (pool.imap 사용)
-    map_start_time = time.time()
-    calculated_chunksize = max(1, len(population) // CORE_NUM) if CORE_NUM > 0 else 1
+        # 3. 멀티프로세싱 실행 (pool.imap 사용)
+        map_start_time = time.time()
+        calculated_chunksize = max(1, len(population) // CORE_NUM) if CORE_NUM > 0 else 1
 
-    results = list(pool.imap(evaluate_individual_shared, args_list, chunksize=calculated_chunksize))
-    map_end_time = time.time()
-    print(f"  - 멀티프로세싱 시간: {map_end_time - map_start_time:.2f}초")
-    '''
+        results = list(pool.imap(evaluate_individual_shared, args_list, chunksize=calculated_chunksize))
+        map_end_time = time.time()
+        print(f"  - 멀티프로세싱 시간: {map_end_time - map_start_time:.2f}초")
+        
     except Exception as e:
         print(f"ERROR in fitness_func during shared memory setup or pool.imap: {e}")
         print(f"!!! Exception Type: {type(e)} !!!")
@@ -195,7 +184,7 @@ def fitness_func(population, original_station_df_ref_for_fitness_func, path_hist
     if not results: # imap에서 에러가 나서 비어있을 경우
         print("Warning: pool.imap returned empty results.")
         return [-np.inf] * len(population), population
-    '''
+   
     # 결과 정렬 (기존 로직)
     sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
     sorted_indices = [x[0] for x in sorted_results]
@@ -454,6 +443,7 @@ def genetic_algorithm():
     immigration_count = 0
     MAX_IMMIGRATIONS = 5
     convergence_count = 0
+
     convergence_df = pd.DataFrame({
         'Generation': pd.Series(dtype='int'),
         'Fitness_Mean': pd.Series(dtype='float'),
@@ -476,16 +466,44 @@ def genetic_algorithm():
     mean_fitness_history = []
     best_fitness_number_of_charger = []
     best_individual_history = []  # 세대별 최고 개체 유전자 저장
+
     station_file_path = path_for_station
+    original_station_df = si.load_station_df(station_file_path)
 
     best_individual = None  # 역대 최고 개체 정보 저장 변수 초기화
     last_generation_individuals = None  # 마지막 세대 개체 정보 저장 변수 초기화
-    original_station_df = si.load_station_df(station_file_path)
+
+    # --- 주기적 저장을 위한 버퍼 초기화 ---
+    current_file_batch_num = 0
+    convergence_data_batch = []
+    all_population_details_batch = []
+    current_batch_best_individuals_genes = []
+    current_batch_best_fitness_values = []
+    current_batch_min_fitness = []
+    current_batch_max_fitness = []
+    current_batch_mean_fitness = []
+    current_batch_generation_numbers = []
+
+    population_data_for_current_generation = None
+
+    # 이 폴더명들이 생성되고, 주기적 파일들이 이 안에 저장됩니다.
+    folder_names_for_periodic_data = {
+        "convergence_info": "convergence_info",
+        "all_population": "all_population",
+        "best_individuals": "best_individuals",
+        "ga_results": "ga_results", 
+        "best_individual": "best_individual"
+    }
+
+    # 데이터 유형별 폴더 미리 생성
+    for key, periodic_folder_name in folder_names_for_periodic_data.items():
+        os.makedirs(os.path.join(result_folder_path, periodic_folder_name), exist_ok=True)
+
     for generation in range(GENERATIONS): # 각 세대 루프 시작
         start_time = time.time()
         print(f"\n세대 {generation + 1}/{GENERATIONS} 진행 중...")
 
-        # --- 주요 변경 사항: 매 세대마다 Pool 생성 ---
+        # 매 세대마다 Pool 생성
         with Pool(processes=CORE_NUM,
                 initializer=init_worker_station,
                 initargs=(original_station_df,)) as pool: # original_station_df는 루프 밖에서 한 번만 로드
@@ -495,16 +513,21 @@ def genetic_algorithm():
             else:
                 population = mutated # 이전 세대의 mutated 결과를 사용
 
-            if generation == GENERATIONS: # 이 조건은 GENERATIONS 루프 때문에 사실상 도달하기 어려울 수 있습니다.
-                                        # 루프 조건이 range(GENERATIONS)이므로 generation은 GENERATIONS-1까지 갑니다.
-                                        # 만약 GENERATIONS번째 '세대'라는 표현을 원한다면 range(GENERATIONS+1) 등을 고려해야 합니다.
-                                        # 혹은 루프 종료 후 처리 로직으로 빼는 것이 명확합니다.
+            if generation == GENERATIONS: 
                 print("지정된 세대의 연산이 종료되었으므로 계산 결과를 출력합니다")
                 break # 루프를 빠져나감
 
             # 적합도 계산 (pool 객체를 인자로 전달)
             fitness_values, sorted_population = fitness_func(population, original_station_df, path_history, pool, generation)
             print('적합도 평가 완료')
+
+            # 모든 개체 정보 저장(버퍼)
+            for i in range(len(sorted_population)):
+                individual_data_for_batch = {'Generation': generation + 1}
+                for gene_idx, gene_val in enumerate(sorted_population[i]):
+                    individual_data_for_batch[f'Gene_{gene_idx+1}'] = gene_val
+                individual_data_for_batch['Fitness'] = fitness_values[i]
+                all_population_details_batch.append(individual_data_for_batch)
 
             # 전체 적합도 값 저장
             all_fitness_history.append(fitness_values)
@@ -519,38 +542,54 @@ def genetic_algorithm():
             max_fitness_history.append(current_max)
             mean_fitness_history.append(current_mean)
 
-            # 현재 세대의 최고 적합도 및 해당 개체
+            current_batch_min_fitness.append(current_min)
+            current_batch_max_fitness.append(current_max)
+            current_batch_mean_fitness.append(current_mean)
+            current_batch_generation_numbers.append(generation + 1)
+
             current_best_fitness = current_max
-            current_best_individual = sorted_population[0]  # 현재 세대 최고 개체
-            best_individual_history.append(current_best_individual)  # 최고 개체 저장
-            fitness_history.append(current_best_fitness)  # 최고 적합도 저장
-            current_best_chargers = int(np.sum(current_best_individual)) # 현재 세대 최고 개체 충전기 수
-            current_best_individual_list = current_best_individual.tolist() # 리스트로 변환
+            current_best_individual = sorted_population[0]
+            
+            best_individual_history.append(current_best_individual)
+            fitness_history.append(current_best_fitness)
 
-            print(f"세대 {generation + 1}의 최고 적합도: {current_best_fitness}")
-            print(f"  - 현재 세대 최고 개체 충전기 합계: {current_best_chargers}")
-            print(f"  - 현재 세대 최고 개체 유전자: ") 
-            columns_to_show = 50  # <--- 원하는 열 개수 
+            current_batch_best_individuals_genes.append(current_best_individual)
+            current_batch_best_fitness_values.append(current_best_fitness)
+            
+            current_best_chargers = int(np.sum(current_best_individual))
 
-            # 각 숫자를 일정한 너비로 맞추기 위해 최대 자릿수 계산 (선택 사항이지만 정렬에 도움)
-            try:
-                max_width = len(str(max(current_best_individual_list))) + 1 # 최대값 자릿수 + 공백 1칸
-            except ValueError:
-                max_width = 2 # 리스트가 비었을 경우 기본값
+            current_best_individual_list = current_best_individual.tolist() # NumPy 배열을 리스트로 변환
+
+            print(f"  - 현재 세대 최고 개체 유전자: ")
+            columns_to_show = 50  # 한 줄에 보여줄 유전자 개수 (사용자 설정 가능)
+
+            # 각 숫자를 일정한 너비로 맞추기 위해 최대 자릿수 계산 (선택 사항, 정렬에 도움)
+            if current_best_individual_list: # 리스트가 비어있지 않은 경우에만 max 계산
+                try:
+                    # 모든 요소가 숫자인지 확인 후 max() 적용, 그렇지 않으면 기본 너비 사용
+                    if all(isinstance(item, (int, float)) for item in current_best_individual_list):
+                        max_val_in_list = max(current_best_individual_list) if current_best_individual_list else 0
+                        max_width = len(str(max_val_in_list)) + 1  # 최대값 자릿수 + 공백 1칸
+                    else:
+                        max_width = 5 # 숫자가 아닌 경우 기본 너비
+                except ValueError: # max() 함수가 비어있는 시퀀스에 대해 호출될 경우 등
+                    max_width = 2 # 기본값
+            else: # 리스트가 비었을 경우
+                max_width = 2 # 기본값
 
             for index, item in enumerate(current_best_individual_list):
-                # f-string을 사용하여 각 숫자를 max_width 만큼의 공간에 오른쪽 정렬하여 출력
-                print(f"{item:<{max_width}}", end="") 
+                # f-string을 사용하여 각 숫자를 max_width 만큼의 공간에 왼쪽 정렬하여 출력
+                # 사용자 원본 코드에서는 왼쪽 정렬을 사용했습니다: f"{item:<{max_width}}"
+                print(f"{str(item):<{max_width}}", end="") # item을 str()으로 변환하여 다양한 타입에 대응
                 
                 # (index + 1)이 columns_to_show의 배수이면 줄 바꿈
                 if (index + 1) % columns_to_show == 0:
                     print() # 새 줄로 이동
 
-            # 마지막 줄이 columns_to_show 개수만큼 채워지지 않았을 경우, 
+            # 마지막 줄이 columns_to_show 개수만큼 채워지지 않았을 경우,
             # 마지막에 줄 바꿈을 한 번 더 해줘서 다음 출력이 이어지지 않도록 함
-            if len(current_best_individual_list) % columns_to_show != 0:
+            if len(current_best_individual_list) % columns_to_show != 0 and len(current_best_individual_list) > 0:
                 print()
-
 
             # 수렴 체크를 위한 변수 초기화 (세대 10 이전에는 0으로 설정)
             charger_change = 0
@@ -645,52 +684,137 @@ def genetic_algorithm():
             mutated = mutation(children, POPULATION_SIZE, MUTATION_RATE, NUM_CANDIDATES, INITIAL_CHARGERS, generation)
             print('변이 연산 완료')
 
-            best_fitness = max(max_fitness_history)  # 최고 적합도 갱신
-            # 수렴 정보 저장
-            convergence_df.to_csv(os.path.join(result_folder_path, "convergence_info.csv"), index=False, mode='w')
+            # --- 주기적 파일 저장 로직 (폴더 구조 변경 적용) ---
+            should_save_batch = False
+            if (generation + 1) % SAVE_INTERVAL == 0:
+                should_save_batch = True
+                current_file_batch_num += 1
+            elif (generation == GENERATIONS - 1): # 정상 종료되는 마지막 세대
+                should_save_batch = True
+                if not ((generation + 1) % SAVE_INTERVAL == 0) and current_batch_generation_numbers:
+                     current_file_batch_num += 1
+            
+            if should_save_batch and current_batch_generation_numbers:
+                batch_start_gen = (current_file_batch_num - 1) * SAVE_INTERVAL + 1
+                batch_end_gen = generation + 1
 
-            # 중복 정보 저장 (주석 유지 - duplicate_info_df 정의 없음)
-            duplicate_info_df.to_csv(os.path.join(result_folder_path, "duplicate_info.csv"), index=False, mode='w')
-            print("세대별 중복 개체 정보를 duplicate_info.csv 파일로 저장")
+                print(f"\n--- 주기적 저장 실행 (폴더 기반): 세대 {batch_start_gen}-{batch_end_gen} ---")
+                
+                file_suffix = f"g{batch_start_gen}-{batch_end_gen}.csv"
 
-            # 역대 최고 개체 및 마지막 세대 개체 정보 저장
-            if best_individual is not None:
-                best_individual_df = pd.DataFrame([best_individual],
-                                                    columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
-                best_individual_df['Fitness'] = best_fitness
-                best_individual_df.to_csv(os.path.join(result_folder_path, "best_individual.csv"), index=False, mode='w')
-                print("역대 최고 개체 정보를 best_individual.csv 파일로 저장")
+                # 1. Convergence Info
+                if convergence_data_batch:
+                    folder = os.path.join(result_folder_path, folder_names_for_periodic_data["convergence_info"])
+                    pd.DataFrame(convergence_data_batch).to_csv(os.path.join(folder, file_suffix), index=False, mode='w')
+                    print(f"Saved: {os.path.join(folder_names_for_periodic_data['convergence_info'], file_suffix)}")
+                    convergence_data_batch.clear()
 
-            if last_generation_individuals is not None:
-                last_gen_df = pd.DataFrame(last_generation_individuals,
-                                        columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
-                last_gen_df['Fitness'] = all_fitness_history[-1]  # 마지막 세대의 적합도 리스트 추가
-                last_gen_df.to_csv(os.path.join(result_folder_path, "last_generation.csv"), index=False, mode='w')
-                print("마지막 세대 개체 정보를 last_generation.csv 파일로 저장")
+                # 2. All Population
+                if all_population_details_batch:
+                    folder = os.path.join(result_folder_path, folder_names_for_periodic_data["all_population"])
+                    pd.DataFrame(all_population_details_batch).to_csv(os.path.join(folder, file_suffix), index=False, mode='w')
+                    print(f"Saved: {os.path.join(folder_names_for_periodic_data['all_population'], file_suffix)}")
+                    all_population_details_batch.clear()
+                
+                # 3. Best Individuals
+                if current_batch_best_individuals_genes:
+                    folder = os.path.join(result_folder_path, folder_names_for_periodic_data["best_individuals"])
+                    df_to_save = pd.DataFrame(current_batch_best_individuals_genes, columns=[f"Station_{i+1}" for i in range(NUM_CANDIDATES)]) # NUM_CANDIDATES 필요
+                    df_to_save['Fitness'] = current_batch_best_fitness_values
+                    df_to_save['Actual_Generation'] = current_batch_generation_numbers[-len(current_batch_best_individuals_genes):]
+                    df_to_save.to_csv(os.path.join(folder, file_suffix), index=False, mode='w')
+                    print(f"Saved: {os.path.join(folder_names_for_periodic_data['best_individuals'], file_suffix)}")
+                    current_batch_best_individuals_genes.clear(); current_batch_best_fitness_values.clear()
 
-            # 세대별 최고 개체 정보 저장
-            best_individuals_df = pd.DataFrame(best_individual_history,
-                                                columns=[f"Station_{i + 1}" for i in range(NUM_CANDIDATES)])
-            best_individuals_df['Generation'] = np.arange(1, len(best_individual_history) + 1)
-            best_individuals_df.to_csv(os.path.join(result_folder_path, "best_individuals_per_generation.csv"), index=False, mode='w')
-            print("세대별 최고 개체 정보를 best_individuals_per_generation.csv 파일에 저장")
+                # 4. GA Results (Min/Max/Mean Fitness)
+                if current_batch_min_fitness:
+                    folder = os.path.join(result_folder_path, folder_names_for_periodic_data["ga_results"])
+                    df_to_save = pd.DataFrame({
+                        'Actual_Generation': current_batch_generation_numbers[-len(current_batch_min_fitness):],
+                        'Min_Fitness': current_batch_min_fitness,
+                        'Max_Fitness': current_batch_max_fitness,
+                        'Mean_Fitness': current_batch_mean_fitness
+                    })
+                    df_to_save.to_csv(os.path.join(folder, file_suffix), index=False, mode='w')
+                    print(f"Saved: {os.path.join(folder_names_for_periodic_data['ga_results'], file_suffix)}")
+                    current_batch_min_fitness.clear(); current_batch_max_fitness.clear(); current_batch_mean_fitness.clear()
+                
+                # 5. Best Individual 
+                if best_individual is not None:
+                    folder = os.path.join(result_folder_path, folder_names_for_periodic_data["best_individual"])
+                    snapshot_file_name = f"at_g{batch_end_gen}.csv"
+                    df_to_save = pd.DataFrame([best_individual], columns=[f"Station_{i+1}" for i in range(NUM_CANDIDATES)])
+                    df_to_save['Fitness'] = best_fitness
+                    df_to_save.to_csv(os.path.join(folder, snapshot_file_name), index=False, mode='w')
+                    print(f"Saved: {os.path.join(folder_names_for_periodic_data['best_individual'], snapshot_file_name)}")
+                
+                current_batch_generation_numbers.clear()
+                print(f"--- 주기적 저장 완료 (폴더 기반) ---")
+        
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"\n세대 {generation + 1}/{GENERATIONS} 연산 소요 시간 {elapsed_time:.2f}초")
 
-            result_dict = {
-                'Generation': np.arange(1, len(min_fitness_history) + 1),
-                'Min_fitness': min_fitness_history,
-                'Max_fitness': max_fitness_history,
-                'Mean_fitness': mean_fitness_history
-            }
-            result_df = pd.DataFrame(result_dict)
-            result_df.to_csv(os.path.join(result_folder_path, "ga_results.csv"), index=False, mode='w')
-            print("각 세대별 fitness value를 csv파일로 저장")
+    # --- 루프 종료 후, 잔여 배치 데이터 저장 ---
+    if current_batch_generation_numbers: # 저장할 데이터가 남아있다면 (조기 종료 등으로 인해)
+        current_file_batch_num += 1
+        batch_start_gen = (current_file_batch_num - 1) * SAVE_INTERVAL + 1
+        batch_end_gen = generation + 1 # 루프가 종료된 실제 마지막 세대 + 1 (generation은 0부터 시작)
+        
+        print(f"\n--- 최종 잔여 데이터 저장 (폴더 기반): 세대 {batch_start_gen}-{batch_end_gen} ---")
+        file_suffix = f"g{batch_start_gen}-{batch_end_gen}.csv"
+        # (위의 주기적 저장 로직과 동일한 코드 반복)
+        if convergence_data_batch:
+            folder = os.path.join(result_folder_path, folder_names_for_periodic_data["convergence_info"])
+            pd.DataFrame(convergence_data_batch).to_csv(os.path.join(folder, file_suffix), index=False, mode='w'); print(f"Saved: {os.path.join(folder_names_for_periodic_data['convergence_info'], file_suffix)}")
+        if all_population_details_batch:
+            folder = os.path.join(result_folder_path, folder_names_for_periodic_data["all_population_details"])
+            pd.DataFrame(all_population_details_batch).to_csv(os.path.join(folder, file_suffix), index=False, mode='w'); print(f"Saved: {os.path.join(folder_names_for_periodic_data['all_population_details'], file_suffix)}")
+        if current_batch_best_individuals_genes:
+            folder = os.path.join(result_folder_path, folder_names_for_periodic_data["best_individuals_per_gen"])
+            df_to_save = pd.DataFrame(current_batch_best_individuals_genes, columns=[f"Station_{i+1}" for i in range(NUM_CANDIDATES)])
+            df_to_save['Fitness'] = current_batch_best_fitness_values
+            df_to_save['Actual_Generation'] = current_batch_generation_numbers[-len(current_batch_best_individuals_genes):]
+            df_to_save.to_csv(os.path.join(folder, file_suffix), index=False, mode='w'); print(f"Saved: {os.path.join(folder_names_for_periodic_data['best_individuals_per_gen'], file_suffix)}")
+        if current_batch_min_fitness:
+            folder = os.path.join(result_folder_path, folder_names_for_periodic_data["ga_results_periodic"])
+            df_to_save = pd.DataFrame({'Actual_Generation': current_batch_generation_numbers[-len(current_batch_min_fitness):],
+                                       'Min_Fitness': current_batch_min_fitness, 'Max_Fitness': current_batch_max_fitness,
+                                       'Mean_Fitness': current_batch_mean_fitness})
+            df_to_save.to_csv(os.path.join(folder, file_suffix), index=False, mode='w'); print(f"Saved: {os.path.join(folder_names_for_periodic_data['ga_results_periodic'], file_suffix)}")
+        if best_individual is not None:
+            folder = os.path.join(result_folder_path, folder_names_for_periodic_data["best_individual_snapshots"])
+            snapshot_file_name = f"at_g{batch_end_gen}.csv"
+            pd.DataFrame([best_individual], columns=[f"Station_{i+1}" for i in range(NUM_CANDIDATES)])['Fitness'] = best_fitness
+            df_to_save.to_csv(os.path.join(folder, snapshot_file_name), index=False, mode='w'); print(f"Saved: {os.path.join(folder_names_for_periodic_data['best_individual_snapshots'], snapshot_file_name)}")
+        print(f"--- 최종 잔여 데이터 저장 완료 (폴더 기반) ---")
+        # 버퍼 비우기 (이미 위에서 수행됨, 명시적으로 한번 더)
+        convergence_data_batch.clear(); all_population_details_batch.clear(); current_batch_best_individuals_genes.clear(); current_batch_best_fitness_values.clear(); current_batch_min_fitness.clear(); current_batch_max_fitness.clear(); current_batch_mean_fitness.clear(); current_batch_generation_numbers.clear()
 
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print(f"\n세대 {generation + 1}/{GENERATIONS} 연산 소요 시간 {elapsed_time:.2f}초")
+
+    final_executed_generations = generation + 1
+
+    if last_generation_individuals is None and 'sorted_population' in locals() and sorted_population is not None:
+        last_generation_individuals = sorted_population
+    if last_generation_individuals is not None:
+        # 이 파일은 result_folder_path 최상위에 저장 (주기적 파일이 아님)
+        last_gen_df = pd.DataFrame(last_generation_individuals, columns=[f"Station_{i+1}" for i in range(NUM_CANDIDATES)])
+        if all_fitness_history:
+            num_individuals_in_last_gen = len(last_generation_individuals)
+            last_fitness_values_for_df = all_fitness_history[-1][:num_individuals_in_last_gen]
+            last_gen_df['Fitness'] = last_fitness_values_for_df
+        last_gen_filename = os.path.join(result_folder_path, f"last_generation_g{final_executed_generations}.csv")
+        last_gen_df.to_csv(last_gen_filename, index=False, mode='w'); print(f"Saved: {last_gen_filename}")
+    
+    if best_individual is not None:
+        # 이 파일은 result_folder_path 최상위에 저장 (주기적 파일이 아님)
+        final_best_df = pd.DataFrame([best_individual], columns=[f"Station_{i+1}" for i in range(NUM_CANDIDATES)])
+        final_best_df['Fitness'] = best_fitness
+        final_best_filename = os.path.join(result_folder_path, f"best_individual_overall_final_g{final_executed_generations}.csv")
+        final_best_df.to_csv(final_best_filename, index=False, mode='w'); print(f"Saved: {final_best_filename}")
 
     print("\n유전 알고리즘 종료")
-    print(f"최종 세대 수: {generation + 1}")
+    print(f"최종 세대 수: {final_executed_generations}")
     print(f"최고 적합도: {best_fitness}")
 
    
@@ -750,6 +874,8 @@ def genetic_algorithm():
     ax2[1].set_xticks(range(0, len(gens), len(gens) // 5))
     ax2[1].set_ylabel('Fitness Mean Change Ratio')
     ax2[1].set_xlabel('Generation')
+    
+    
     ax2[1].legend()
     ax2[1].grid(True)
 
@@ -776,11 +902,96 @@ def genetic_algorithm():
 
     plt.show()  # 마지막에 plt.show() 호출하여 그래프 화면 출력 (선택 사항)
 
-if __name__ == '__main__':
-    # 로그 파일 경로
-    #log_file_path = os.path.join(r"C:\Users\user\Desktop\화물차 충전소", "genetic_algorithm.log")
+def _extract_gen_numbers_from_filename(filename):
+    """ Helper function to extract start and end generation numbers from filenames like 'g1-50.csv' or 'at_g50.csv' """
+    match_range = re.match(r"g(\d+)-(\d+)\.csv", filename)
+    if match_range:
+        return int(match_range.group(1)), int(match_range.group(2))
+    match_single = re.match(r"at_g(\d+)\.csv", filename)
+    if match_single:
+        num = int(match_single.group(1))
+        return num, num # Treat as a range of one for sorting
+    return None, None # Or raise an error/return a value indicating no match
 
-    # 로깅 설정
-    #logging.basicConfig(filename=log_file_path, level=logging.INFO,
-                        #format='%(asctime)s - %(levelname)s - %(message)s',filemode='w')
+def _merge_periodic_csv_files(base_result_folder, data_type_folder_names):
+    """
+    Merges periodically saved CSV files for each data type into a single CSV file.
+    The merged file is saved in a 'merged_data' subfolder within each data type folder.
+    """
+    print("\n--- 주기별 파일 통합 시작 ---")
+    for data_folder_name in data_type_folder_names:
+        current_data_type_folder = os.path.join(base_result_folder, data_folder_name)
+        
+        if not os.path.isdir(current_data_type_folder):
+            print(f"폴더를 찾을 수 없습니다 (통합 건너뛰기): {current_data_type_folder}")
+            continue
+
+        # 주기별 파일 패턴 (예: g1-50.csv, at_g50.csv)
+        # glob을 사용하여 모든 csv 파일을 가져옴
+        periodic_files_pattern = os.path.join(current_data_type_folder, "*.csv")
+        periodic_files = glob.glob(periodic_files_pattern)
+
+        if not periodic_files:
+            print(f"통합할 CSV 파일이 없습니다: {current_data_type_folder}")
+            continue
+            
+        # 파일명에서 세대 정보를 추출하여 정렬
+        # (start_gen, end_gen, filepath) 튜플 리스트 생성
+        files_with_gen_info = []
+        for f_path in periodic_files:
+            f_name = os.path.basename(f_path)
+            start_g, end_g = _extract_gen_numbers_from_filename(f_name)
+            if start_g is not None: # 유효한 파일명 패턴일 경우에만 추가
+                files_with_gen_info.append((start_g, end_g, f_path))
+        
+        # 시작 세대 번호 기준으로 정렬
+        files_with_gen_info.sort(key=lambda x: x[0])
+        
+        sorted_periodic_files = [f_path for start_g, end_g, f_path in files_with_gen_info]
+
+        if not sorted_periodic_files:
+            print(f"유효한 패턴의 통합할 CSV 파일이 없습니다 (정렬 후): {current_data_type_folder}")
+            continue
+
+        all_data_frames = []
+        for f_path in sorted_periodic_files:
+            try:
+                df = pd.read_csv(f_path)
+                all_data_frames.append(df)
+            except Exception as e:
+                print(f"파일 읽기 오류 (건너뛰기): {f_path} - {e}")
+                continue
+        
+        if not all_data_frames:
+            print(f"읽을 수 있는 데이터 프레임이 없습니다 (통합 실패): {data_folder_name}")
+            continue
+            
+        merged_df = pd.concat(all_data_frames, ignore_index=True)
+        
+        merged_data_subfolder = os.path.join(current_data_type_folder, "merged_data")
+        os.makedirs(merged_data_subfolder, exist_ok=True)
+        
+        merged_filename = f"all_{data_folder_name}.csv"
+        merged_filepath = os.path.join(merged_data_subfolder, merged_filename)
+        
+        try:
+            merged_df.to_csv(merged_filepath, index=False, mode='w')
+            print(f"통합 파일 저장 완료: {os.path.join(data_folder_name, 'merged_data', merged_filename)}")
+        except Exception as e:
+            print(f"통합 파일 저장 오류: {merged_filepath} - {e}")
+            
+    print("--- 주기별 파일 통합 완료 ---")
+
+if __name__ == '__main__':
+    try:
+        # 멀티프로세싱 시작 방식을 'forkserver'로 설정합니다.
+        multiprocessing.set_start_method('forkserver', force=True)
+        print("멀티프로세싱 시작 방식을 'forkserver'로 설정했습니다.")
+    except RuntimeError as e:
+        # 이미 시작 방식이 설정되어 변경할 수 없는 경우 등 RuntimeError가 발생할 수 있습니다.
+        print(f"경고: 멀티프로세싱 시작 방식을 'forkserver'로 변경하지 못했습니다. ({e})")
+        print("      이미 설정되었거나 다른 컨텍스트에서 호출되었을 수 있습니다.")
+    except Exception as e_other:
+        # 기타 예외 처리
+        print(f"멀티프로세싱 시작 방식 설정 중 예기치 않은 오류 발생: {e_other}")
     genetic_algorithm()
