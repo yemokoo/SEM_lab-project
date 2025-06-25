@@ -1,5 +1,7 @@
+from datetime import datetime
 import random
 import warnings
+from matplotlib import pyplot as plt, ticker
 import pandas as pd
 import numpy as np
 import os
@@ -190,7 +192,15 @@ class Simulator:
         analysis_start_time = time.time()
 
         station_data = [
-            {'station_id': station.station_id, 'num_of_charger': station.num_of_chargers}
+            {'station_id': station.station_id, 
+             'link_id': station.link_id, # station_id 외에 link_id도 추가하면 유용할 수 있음
+             'num_of_charger': station.num_of_chargers,
+             'total_charged_energy_kWh': sum(c.total_charged_energy for c in station.chargers),
+             'total_charging_events': sum(c.charging_events_count for c in station.chargers),
+             'avg_queue_length': np.mean(station.queue_history) if station.queue_history else 0,
+             'max_queue_length': np.max(station.queue_history) if station.queue_history else 0,
+             'avg_waiting_time_min': np.mean(station.waiting_times) if station.waiting_times else 0,
+            }
             for station in self.stations
         ]
         self.station_results_df = pd.DataFrame(station_data)
@@ -292,89 +302,104 @@ class Simulator:
 
 
     def calculate_penalty(self, failed_trucks_df, station_df):
-        """
-        위약금을 계산합니다.
-        """
-        truck_penalty = 0
-        charger_penalty = 0
-        
-        # failed_trucks_df가 None이거나 비어있을 경우 처리
-        if failed_trucks_df is not None and not failed_trucks_df.empty:
-            planned_dist = failed_trucks_df['total_distance_planned']
-            last_stop_dist = failed_trucks_df['traveled_distance_at_last_stop85'].fillna(0)
+            """
+            목적지 미도착, 충전기 수 초과, 충전소 대기 시간에 대한 페널티를 계산하고,
+            충전소별 대기 페널티 상세 내역을 함께 반환합니다.
+            """
+            # 1. 목적지 미도착 트럭 페널티
+            truck_penalty = 0.0
+            if failed_trucks_df is not None and not failed_trucks_df.empty:
+                planned_dist = failed_trucks_df['total_distance_planned']
+                last_stop_dist = failed_trucks_df['traveled_distance_at_last_stop85'].fillna(0)
+                distance_for_penalty = np.where(
+                    last_stop_dist <= 0,
+                    planned_dist / 2,
+                    np.maximum(0, planned_dist - last_stop_dist) / 2
+                )
+                choice = np.random.choice([True, False], size=len(failed_trucks_df))
+                penalty = np.where(
+                    choice,
+                    136395.90 + 3221.87 * distance_for_penalty - 2.72 * distance_for_penalty**2,
+                    121628.18 + 2765.50 * distance_for_penalty - 2.00 * distance_for_penalty**2
+                )
+                truck_penalty = np.maximum(0, penalty).sum()
 
-            distance_for_penalty = np.where(
-                last_stop_dist <= 0,
-                planned_dist / 2,
-                np.maximum(0, planned_dist - last_stop_dist) / 2 
-            )
+            # 2. 최대 충전기 수 초과 페널티
+            charger_penalty = 0.0
+            number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
+            if number_of_total_chargers > self.number_of_max_chargers:
+                charger_cost_per_unit = 80000000
+                charger_penalty = float(charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers))
+
+            # 3. 충전소 대기 시간 페널티
+            HOURLY_REVENUE_VALUE = 11000000 / (10.9 * 22.4)  # 시간당 매출 가치
+            WAITING_TOLERANCE_MINUTES = 5
+            station_waiting_penalties = {}
+
+            for station in self.stations:
+                station_penalty = 0.0
+                if station.waiting_times:
+                    for wait_time in station.waiting_times:
+                        penalty_applicable_minutes = max(0, wait_time - WAITING_TOLERANCE_MINUTES)
+                        if penalty_applicable_minutes > 0:
+                            penalty_hours = penalty_applicable_minutes / 60.0
+                            station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
+                station_waiting_penalties[station.station_id] = station_penalty
             
-            choice = np.random.choice([True, False], size=len(failed_trucks_df))
+            total_waiting_penalty = sum(station_waiting_penalties.values())
+
+            # 4. 페널티 합산 및 결과 반환
+            total_penalty = truck_penalty + charger_penalty + total_waiting_penalty
             
-            penalty = np.where(
-                choice,
-                136395.90 + 3221.87 * distance_for_penalty - 2.72 * distance_for_penalty**2,
-                121628.18 + 2765.50 * distance_for_penalty - 2.00 * distance_for_penalty**2
-            )
+            summary_results = {
+                'truck_penalty': truck_penalty,
+                'charger_penalty': charger_penalty,
+                'waiting_penalty': total_waiting_penalty,
+                'total_penalty': total_penalty
+            }
+            summary_df = pd.DataFrame([summary_results])
             
-            truck_penalty = np.maximum(0, penalty).sum()
-
-        number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
-
-        if number_of_total_chargers > self.number_of_max_chargers:
-            charger_cost_per_unit = 80000000
-            charger_penalty = charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers)
-        else:
-            charger_penalty = 0
+            station_penalty_df = pd.DataFrame(list(station_waiting_penalties.items()), columns=['station_id', 'waiting_penalty'])
             
-        total_penalty = truck_penalty + charger_penalty
-
-        results = {'truck_penalty': truck_penalty, 'charger_penalty': charger_penalty, 'total_penalty': total_penalty}
-        return pd.DataFrame([results])
-
+            return summary_df, station_penalty_df
+    
 
     def calculate_of(self):
-        """
-        OF(Objective Function) 값을 계산합니다. (Revenue - OPEX - CAPEX - Penalty)
-        """
-        if self.station_results_df is None or self.station_results_df.empty:
-            return 0 
+            """
+            OF(Objective Function) 값을 계산하고 재무/운영 요약 및 그래프를 저장합니다.
+            (financial_summary_by_station.csv에 대기 시간 페널티 열 추가)
+            """
+            if self.station_results_df is None or self.station_results_df.empty:
+                print("Warning: station_results_df is empty or not generated. OF calculation aborted, returning 0.")
+                return 0
 
-        revenue_df = self.calculate_revenue(self.station_results_df)
-        opex_df = self.calculate_OPEX(self.station_results_df)
-        capex_df = self.calculate_CAPEX(self.station_results_df)
-        penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)
+            revenue_df = self.calculate_revenue(self.station_results_df)
+            opex_df = self.calculate_OPEX(self.station_results_df)
+            capex_df = self.calculate_CAPEX(self.station_results_df)
+            penalty_summary_df, station_penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)
 
-        merged_df = pd.merge(revenue_df[['station_id', 'revenue']], 
-                             opex_df[['station_id', 'opex']], 
-                             on='station_id', how='outer')
-        merged_df = pd.merge(merged_df, 
-                             capex_df[['station_id', 'capex']], 
-                             on='station_id', how='outer')
-        merged_df.fillna(0, inplace=True) 
+            # 재무 관련 DataFrame 병합
+            merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
+            merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
+            # [변경] 충전소별 대기 시간 페널티 데이터 병합
+            merged_df = pd.merge(merged_df, station_penalty_df, on='station_id', how='outer')
+            
+            merged_df.fillna(0, inplace=True)
+            
+            if 'station_id' in merged_df.columns:
+                merged_df['station_id'] = merged_df['station_id'].astype(int)
+            
+            merged_df['net_profit_before_penalty'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
 
-        total_revenue = merged_df['revenue'].sum()
-        total_opex = merged_df['opex'].sum()
-        total_capex = merged_df['capex'].sum()
-        total_penalty = penalty_df['total_penalty'].iloc[0] if not penalty_df.empty else 0
-        
-        of = total_revenue - total_opex - total_capex - total_penalty
-        of = round(of)
+            total_revenue = merged_df['revenue'].sum()
+            total_opex = merged_df['opex'].sum()
+            total_capex = merged_df['capex'].sum()
+            total_penalty = penalty_summary_df['total_penalty'].iloc[0] if not penalty_summary_df.empty else 0
+            
+            of_value = round(total_revenue - total_opex - total_capex - total_penalty)
 
-        # 결과 출력
-        truck_penalty = penalty_df['truck_penalty'].iloc[0] if not penalty_df.empty else 0
-        charger_penalty = penalty_df['charger_penalty'].iloc[0] if not penalty_df.empty else 0
-        print(f"\n--- 재무 요약 ---")
-        print(f"총 수익: {round(total_revenue)}")
-        print(f"총 운영비(OPEX): {round(total_opex)}")
-        print(f"총 자본비(CAPEX): {round(total_capex)}")
-        print(f"총 위약금: {round(total_penalty)} (트럭: {round(truck_penalty)}, 충전기: {round(charger_penalty)})")
-        print(f"목적 함수 값 (OF): {of}")
-        print(f"-------------------")
-
-        return of
-
-
+            return of_value
+    
     def load_stations(self, df):
         """
         DataFrame에서 충전소 정보를 읽어 Station 객체 리스트를 생성합니다.
@@ -394,6 +419,7 @@ class Simulator:
             for idx, row in df.iterrows() 
         ]
         return stations
+
 
 # --- 전역 함수 ---
 
@@ -557,12 +583,12 @@ def load_station_df(station_file_path):
 
 # 메인 함수 (스크립트 실행 시 호출)
 if __name__ == '__main__':
-    car_paths_folder = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_stop_added)"
-    station_file_path = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
+    car_paths_folder = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_90km)"
+    station_file_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
 
     simulating_hours = 36
     unit_time = 20 
-    number_of_trucks = 7062
+    number_of_trucks = 5946
     number_of_max_chargers = 2000 
 
     print("--- 데이터 로딩 시작 ---") 

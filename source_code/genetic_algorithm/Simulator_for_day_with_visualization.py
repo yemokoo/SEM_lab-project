@@ -302,306 +302,231 @@ class Simulator:
 
 
     def calculate_penalty(self, failed_trucks_df, station_df):
-        """
-        위약금을 계산합니다.
-        """
-        truck_penalty = 0
-        charger_penalty = 0
-        
-        # failed_trucks_df가 None이거나 비어있을 경우 처리
-        if failed_trucks_df is not None and not failed_trucks_df.empty:
-            planned_dist = failed_trucks_df['total_distance_planned']
-            last_stop_dist = failed_trucks_df['traveled_distance_at_last_stop85'].fillna(0)
+            """
+            목적지 미도착, 충전기 수 초과, 충전소 대기 시간에 대한 페널티를 계산하고,
+            충전소별 대기 페널티 상세 내역을 함께 반환합니다.
+            """
+            # 1. 목적지 미도착 트럭 페널티
+            truck_penalty = 0.0
+            if failed_trucks_df is not None and not failed_trucks_df.empty:
+                planned_dist = failed_trucks_df['total_distance_planned']
+                last_stop_dist = failed_trucks_df['traveled_distance_at_last_stop85'].fillna(0)
+                distance_for_penalty = np.where(
+                    last_stop_dist <= 0,
+                    planned_dist / 2,
+                    np.maximum(0, planned_dist - last_stop_dist) / 2
+                )
+                choice = np.random.choice([True, False], size=len(failed_trucks_df))
+                penalty = np.where(
+                    choice,
+                    136395.90 + 3221.87 * distance_for_penalty - 2.72 * distance_for_penalty**2,
+                    121628.18 + 2765.50 * distance_for_penalty - 2.00 * distance_for_penalty**2
+                )
+                truck_penalty = np.maximum(0, penalty).sum()
 
-            distance_for_penalty = np.where(
-                last_stop_dist <= 0,
-                planned_dist / 2,
-                np.maximum(0, planned_dist - last_stop_dist) / 2 
-            )
+            # 2. 최대 충전기 수 초과 페널티
+            charger_penalty = 0.0
+            number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
+            if number_of_total_chargers > self.number_of_max_chargers:
+                charger_cost_per_unit = 80000000
+                charger_penalty = float(charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers))
+
+            # 3. 충전소 대기 시간 페널티
+            HOURLY_REVENUE_VALUE = 11000000 / (10.9 * 22.4)  # 시간당 매출 가치
+            WAITING_TOLERANCE_MINUTES = 5
+            station_waiting_penalties = {}
+
+            for station in self.stations:
+                station_penalty = 0.0
+                if station.waiting_times:
+                    for wait_time in station.waiting_times:
+                        penalty_applicable_minutes = max(0, wait_time - WAITING_TOLERANCE_MINUTES)
+                        if penalty_applicable_minutes > 0:
+                            penalty_hours = penalty_applicable_minutes / 60.0
+                            station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
+                station_waiting_penalties[station.station_id] = station_penalty
             
-            choice = np.random.choice([True, False], size=len(failed_trucks_df))
+            total_waiting_penalty = sum(station_waiting_penalties.values())
+
+            # 4. 페널티 합산 및 결과 반환
+            total_penalty = truck_penalty + charger_penalty + total_waiting_penalty
             
-            penalty = np.where(
-                choice,
-                136395.90 + 3221.87 * distance_for_penalty - 2.72 * distance_for_penalty**2,
-                121628.18 + 2765.50 * distance_for_penalty - 2.00 * distance_for_penalty**2
-            )
+            summary_results = {
+                'truck_penalty': truck_penalty,
+                'charger_penalty': charger_penalty,
+                'waiting_penalty': total_waiting_penalty,
+                'total_penalty': total_penalty
+            }
+            summary_df = pd.DataFrame([summary_results])
             
-            truck_penalty = np.maximum(0, penalty).sum()
-
-        number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
-
-        if number_of_total_chargers > self.number_of_max_chargers:
-            charger_cost_per_unit = 80000000
-            charger_penalty = charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers)
-        else:
-            charger_penalty = 0
+            station_penalty_df = pd.DataFrame(list(station_waiting_penalties.items()), columns=['station_id', 'waiting_penalty'])
             
-        total_penalty = truck_penalty + charger_penalty
-
-        results = {'truck_penalty': truck_penalty, 'charger_penalty': charger_penalty, 'total_penalty': total_penalty}
-        return pd.DataFrame([results])
-
+            return summary_df, station_penalty_df
+    
 
     def calculate_of(self):
-        """
-        Calculates the Objective Function (OF) value.
-        (Revenue - OPEX - CAPEX - Penalty)
-        Saves financial summaries and operational graphs.
-        All text in graphs will be in English.
-        X-axis for station IDs will show ticks at multiples of 50.
-        Operational graphs will include a horizontal line for the average value.
-        """
-        if self.station_results_df is None or self.station_results_df.empty:
-            print("Warning: station_results_df is empty or not generated. OF calculation aborted, returning 0.")
-            return 0
+            """
+            OF(Objective Function) 값을 계산하고 재무/운영 요약 및 그래프를 저장합니다.
+            (financial_summary_by_station.csv에 대기 시간 페널티 열 추가)
+            """
+            if self.station_results_df is None or self.station_results_df.empty:
+                print("Warning: station_results_df is empty or not generated. OF calculation aborted, returning 0.")
+                return 0
 
-        revenue_df = self.calculate_revenue(self.station_results_df)
-        opex_df = self.calculate_OPEX(self.station_results_df)
-        capex_df = self.calculate_CAPEX(self.station_results_df)
-        penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)
+            revenue_df = self.calculate_revenue(self.station_results_df)
+            opex_df = self.calculate_OPEX(self.station_results_df)
+            capex_df = self.calculate_CAPEX(self.station_results_df)
+            penalty_summary_df, station_penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)
 
-        merged_df = pd.merge(revenue_df[['station_id', 'revenue']],
-                             opex_df[['station_id', 'opex']],
-                             on='station_id', how='outer')
-        merged_df = pd.merge(merged_df,
-                             capex_df[['station_id', 'capex']],
-                             on='station_id', how='outer')
-        merged_df.fillna(0, inplace=True)
-        
-        # Ensure 'station_id' is integer for proper tick calculation
-        if 'station_id' in merged_df.columns:
-            try:
+            # 재무 관련 DataFrame 병합
+            merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
+            merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
+            # [변경] 충전소별 대기 시간 페널티 데이터 병합
+            merged_df = pd.merge(merged_df, station_penalty_df, on='station_id', how='outer')
+            
+            merged_df.fillna(0, inplace=True)
+            
+            if 'station_id' in merged_df.columns:
                 merged_df['station_id'] = merged_df['station_id'].astype(int)
-            except ValueError:
-                print("Warning: Could not convert 'station_id' in merged_df to integer. X-axis ticks might not be as expected.")
-        
-        merged_df['net_profit_before_penalty'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
+            
+            merged_df['net_profit_before_penalty'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
 
-        total_revenue = merged_df['revenue'].sum()
-        total_opex = merged_df['opex'].sum()
-        total_capex = merged_df['capex'].sum()
-        total_penalty = penalty_df['total_penalty'].iloc[0] if not penalty_df.empty and 'total_penalty' in penalty_df.columns else 0
-        
-        of_value = total_revenue - total_opex - total_capex - total_penalty
-        of_value = round(of_value)
+            total_revenue = merged_df['revenue'].sum()
+            total_opex = merged_df['opex'].sum()
+            total_capex = merged_df['capex'].sum()
+            total_penalty = penalty_summary_df['total_penalty'].iloc[0] if not penalty_summary_df.empty else 0
+            
+            of_value = round(total_revenue - total_opex - total_capex - total_penalty)
 
-        truck_penalty_for_print = penalty_df['truck_penalty'].iloc[0] if not penalty_df.empty and 'truck_penalty' in penalty_df.columns else 0
-        charger_penalty_for_print = penalty_df['charger_penalty'].iloc[0] if not penalty_df.empty and 'charger_penalty' in penalty_df.columns else 0
-        
-        print(f"\n--- Financial Summary ---")
-        print(f"Total Revenue: {round(total_revenue)}")
-        print(f"Total OPEX: {round(total_opex)}")
-        print(f"Total CAPEX: {round(total_capex)}")
-        print(f"Total Penalty: {round(total_penalty)} (Truck: {round(truck_penalty_for_print)}, Charger: {round(charger_penalty_for_print)})")
-        print(f"Objective Function (OF) Value: {of_value}")
-        print(f"-------------------")
+            # --- Financial Summary ---
+            truck_p = penalty_summary_df['truck_penalty'].iloc[0] if not penalty_summary_df.empty else 0
+            charger_p = penalty_summary_df['charger_penalty'].iloc[0] if not penalty_summary_df.empty else 0
+            waiting_p = penalty_summary_df['waiting_penalty'].iloc[0] if not penalty_summary_df.empty else 0
+            
+            print(f"\n--- Financial Summary ---")
+            print(f"Total Revenue: {round(total_revenue)}")
+            print(f"Total OPEX: {round(total_opex)}")
+            print(f"Total CAPEX: {round(total_capex)}")
+            print(f"Total Penalty: {round(total_penalty)} (Truck: {round(truck_p)}, Charger: {round(charger_p)}, Waiting: {round(waiting_p)})")
+            print(f"Objective Function (OF) Value: {of_value}")
+            print(f"-------------------")
 
-        base_save_path = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Result"
-        current_timestamp_str = datetime.now().strftime("%Y-%m-%d %H-%M")
-        timestamped_folder_path = os.path.join(base_save_path, current_timestamp_str)
-        os.makedirs(timestamped_folder_path, exist_ok=True)
-        print(f"Results will be saved in: {timestamped_folder_path}")
+            # --- Save Results ---
+            base_save_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Result"
+            current_timestamp_str = datetime.now().strftime("%Y-%m-%d %H-%M")
+            timestamped_folder_path = os.path.join(base_save_path, current_timestamp_str)
+            os.makedirs(timestamped_folder_path, exist_ok=True)
+            print(f"Results will be saved in: {timestamped_folder_path}")
 
-        station_results_filename = "station_operational_summary.csv"
-        station_results_filepath = os.path.join(timestamped_folder_path, station_results_filename)
-        if self.station_results_df is not None and not self.station_results_df.empty:
-            self.station_results_df.to_csv(station_results_filepath, index=False, encoding='utf-8-sig')
-            print(f"Station operational summary saved to: {station_results_filepath}")
+            self.station_results_df.to_csv(os.path.join(timestamped_folder_path, "station_operational_summary.csv"), index=False, encoding='utf-8-sig')
+            # 이제 merged_df에 'waiting_penalty' 열이 포함된 상태로 저장됩니다.
+            merged_df.to_csv(os.path.join(timestamped_folder_path, "financial_summary_by_station.csv"), index=False, encoding='utf-8-sig')
+            print(f"Result files saved.")
 
-        merged_df_filename = "financial_summary_by_station.csv"
-        merged_df_filepath = os.path.join(timestamped_folder_path, merged_df_filename)
-        merged_df.to_csv(merged_df_filepath, index=False, encoding='utf-8-sig')
-        print(f"Financial summary by station saved to: {merged_df_filepath}")
+            # --- Graphing ---
+            # (그래프 생성 코드는 이전과 동일하므로 생략)
+            if 'station_id' not in merged_df.columns or merged_df['station_id'].isnull().all():
+                print("Error: 'station_id' is missing. Cannot generate graphs.")
+                return of_value
+            
+            merged_df.sort_values('station_id', inplace=True)
+            financial_station_ids_int = merged_df['station_id']
+            financial_x_labels_str = financial_station_ids_int.astype(str)
 
-        # --- Graphing ---
-        # Prepare x-axis labels and ticks
-        # Assuming station_id are integers and can be sorted for consistent ticking
-        if 'station_id' not in merged_df.columns or merged_df['station_id'].isnull().all():
-            print("Error: 'station_id' is missing or all null in merged_df. Cannot generate graphs.")
+            def set_xticks_by_50(ax, station_ids_int):
+                if station_ids_int.empty: return
+                unique_sorted_ids = station_ids_int.unique()
+                min_id, max_id = unique_sorted_ids[0], unique_sorted_ids[-1]
+                ticks_to_show = [sid for sid in unique_sorted_ids if sid % 50 == 0]
+                if not ticks_to_show:
+                    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=10, integer=True))
+                else:
+                    if min_id not in ticks_to_show: ticks_to_show.insert(0, min_id)
+                    if max_id not in ticks_to_show and max_id != min_id: ticks_to_show.append(max_id)
+                    ax.set_xticks(sorted(list(set(ticks_to_show))))
+                    ax.set_xticklabels([str(t) for t in sorted(list(set(ticks_to_show)))], rotation=90, ha='right')
+
+            # Graph 1: Financial Components
+            fig1, ax1 = plt.subplots(figsize=(18, 9))
+            ax1.bar(financial_x_labels_str, merged_df['revenue'], label='Revenue', color='green')
+            ax1.bar(financial_x_labels_str, -merged_df['opex'], label='OPEX', color='orangered')
+            ax1.bar(financial_x_labels_str, -merged_df['capex'], label='CAPEX', color='darkred')
+            penalty_text = f"Truck Penalty: {round(truck_p)}\nCharger Penalty: {round(charger_p)}\nWaiting Penalty: {round(waiting_p)}"
+            ax1.text(0.98, 0.98, penalty_text, ha='right', va='top', transform=ax1.transAxes, bbox=dict(boxstyle='round,pad=0.5', fc='gold', alpha=0.7))
+            ax1.set_xlabel('Station ID'); ax1.set_ylabel('Amount'); ax1.set_title('Financial Components by Station')
+            ax1.legend(loc='best'); set_xticks_by_50(ax1, financial_station_ids_int)
+            ax1.axhline(0, color='black', linewidth=0.8); ax1.grid(axis='y', linestyle='--', alpha=0.7)
+            plt.tight_layout()
+            plt.savefig(os.path.join(timestamped_folder_path, "station_financial_components.png"))
+            plt.close(fig1)
+
+            # Graph 2: Net Profit
+            fig2, ax2 = plt.subplots(figsize=(18, 9))
+            net_profit_colors = ['mediumseagreen' if x >= 0 else 'tomato' for x in merged_df['net_profit_before_penalty']]
+            ax2.bar(financial_x_labels_str, merged_df['net_profit_before_penalty'], label='Net Profit (Before Penalty)', color=net_profit_colors)
+            ax2.set_xlabel('Station ID'); ax2.set_ylabel('Net Profit'); ax2.set_title('Net Profit by Station (Before Penalty)')
+            ax2.legend(loc='best'); set_xticks_by_50(ax2, financial_station_ids_int)
+            ax2.axhline(0, color='black', linewidth=0.8); ax2.grid(axis='y', linestyle='--', alpha=0.7)
+            plt.tight_layout()
+            plt.savefig(os.path.join(timestamped_folder_path, "station_net_profit_before_penalty.png"))
+            plt.close(fig2)
+
+            # --- Operational Graphs ---
+            if self.station_results_df is not None and not self.station_results_df.empty:
+                op_df = pd.merge(self.station_results_df, station_penalty_df, on='station_id', how='left').fillna(0)
+                op_df['station_id'] = op_df['station_id'].astype(int)
+                op_df.sort_values('station_id', inplace=True)
+                op_station_ids_int = op_df['station_id']
+                op_x_labels_str = op_station_ids_int.astype(str)
+
+                graph_configs = [
+                    {'y_col': 'total_charged_energy_kWh', 'title': 'Total Charged Energy per Station', 'ylabel': 'Total Charged Energy (kWh)', 'color': 'dodgerblue', 'avg_color': 'red'},
+                    {'y_col': 'total_charging_events', 'title': 'Total Charging Events per Station', 'ylabel': 'Total Charging Events', 'color': 'mediumpurple', 'avg_color': 'darkmagenta'},
+                    {'y_col': 'avg_waiting_time_min', 'title': 'Average Waiting Time per Station', 'ylabel': 'Average Waiting Time (minutes)', 'color': 'teal', 'avg_color': 'darkcyan'},
+                    {'y_col': 'num_of_charger', 'title': 'Number of Chargers per Station', 'ylabel': 'Number of Chargers', 'color': 'goldenrod', 'avg_color': 'darkgoldenrod'},
+                    {'y_col': 'waiting_penalty', 'title': 'Waiting Time Penalty per Station', 'ylabel': 'Waiting Time Penalty (KRW)', 'color': 'lightcoral', 'avg_color': 'darkred'}
+                ]
+
+                for config in graph_configs:
+                    fig, ax = plt.subplots(figsize=(18, 9))
+                    ax.bar(op_x_labels_str, op_df[config['y_col']], label=config['ylabel'], color=config['color'])
+                    avg_val = op_df[config['y_col']].mean()
+                    ax.axhline(y=avg_val, color=config['avg_color'], linestyle='--', linewidth=1.5, label=f'Average: {avg_val:.2f}')
+                    ax.set_xlabel('Station ID'); ax.set_ylabel(config['ylabel']); ax.set_title(config['title'])
+                    ax.legend(loc='best'); set_xticks_by_50(ax, op_station_ids_int); ax.grid(axis='y', linestyle='--', alpha=0.7)
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(timestamped_folder_path, f"station_{config['y_col']}.png"))
+                    plt.close(fig)
+
+                # Graph: Queue Lengths
+                fig, ax = plt.subplots(figsize=(18, 9))
+                ax.bar(op_x_labels_str, op_df['max_queue_length'], label='Max Queue Length', color='#1f77b4')
+                ax.bar(op_x_labels_str, op_df['avg_queue_length'], label='Average Queue Length', color='#ff7f0e')
+                avg_queue = op_df['avg_queue_length'].mean()
+                ax.axhline(y=avg_queue, color='red', linestyle='--', linewidth=1.5, label=f'Overall Avg Queue Length: {avg_queue:.2f}')
+                ax.set_xlabel('Station ID'); ax.set_ylabel('Queue Length (Number of Trucks)'); ax.set_title('Average and Max Queue Length per Station')
+                ax.legend(loc='best'); set_xticks_by_50(ax, op_station_ids_int); ax.grid(axis='y', linestyle='--', alpha=0.7)
+                plt.tight_layout()
+                plt.savefig(os.path.join(timestamped_folder_path, "station_queue_lengths.png"))
+                plt.close(fig)
+
+                # Graph: Avg Waiting Time vs. Number of Chargers (Overlay)
+                fig, ax = plt.subplots(figsize=(18, 9))
+                bar_width = 0.8
+                rects1 = ax.bar(op_x_labels_str, op_df['avg_waiting_time_min'], width=bar_width, color='teal', label='Average Waiting Time (min)', zorder=2)
+                ax.set_xlabel('Station ID', fontsize=12); ax.set_ylabel('Average Waiting Time (minutes)', color='teal', fontsize=12); ax.tick_params(axis='y', labelcolor='teal')
+                ax2 = ax.twinx()
+                rects2 = ax2.bar(op_x_labels_str, op_df['num_of_charger'], width=bar_width, color='orangered', label='Number of Chargers', alpha=0.6, zorder=1)
+                ax2.set_ylabel('Number of Chargers', color='orangered', fontsize=12); ax2.tick_params(axis='y', labelcolor='orangered'); ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+                ax.set_title('Average Waiting Time and Number of Chargers per Station (Overlay)', fontsize=16)
+                set_xticks_by_50(ax, op_station_ids_int); ax.legend(handles=[rects1, rects2], loc='upper left'); fig.tight_layout()
+                plt.savefig(os.path.join(timestamped_folder_path, "station_wait_time_vs_chargers_overlay.png"), dpi=300)
+                plt.close(fig)
+
+                print(f"Operational graphs saved.")
+
             return of_value
-        
-        # Convert station_id to string for categorical plotting, but use integer values for tick logic
-        financial_station_ids_int = merged_df['station_id'].astype(int)
-        financial_x_labels_str = financial_station_ids_int.astype(str) # For direct use in plt.bar if not setting custom ticks
-
-        # Function to set x-axis ticks at multiples of 50
-        def set_xticks_by_50(ax, station_ids_int):
-            unique_sorted_ids = np.sort(station_ids_int.unique())
-            if len(unique_sorted_ids) == 0:
-                return
-
-            min_id, max_id = unique_sorted_ids[0], unique_sorted_ids[-1]
-            
-            ticks_to_show_values = [sid for sid in unique_sorted_ids if sid % 50 == 0]
-            
-            # Ensure first and last are shown if not multiple of 50 and list is not empty
-            if not ticks_to_show_values and len(unique_sorted_ids) > 0 : # If no multiples of 50, show some ticks
-                 ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=10, integer=True)) # Show up to 10 ticks
-            elif len(unique_sorted_ids) > 0:
-                if min_id not in ticks_to_show_values:
-                    ticks_to_show_values.insert(0, min_id)
-                if max_id not in ticks_to_show_values and max_id != min_id:
-                     # Check if max_id is already covered by a multiple of 50 close to it
-                    if not any(abs(max_id - t) < 50 for t in ticks_to_show_values if t % 50 == 0) or max_id % 50 != 0 :
-                        ticks_to_show_values.append(max_id)
-                
-                ticks_to_show_values = sorted(list(set(ticks_to_show_values))) # Remove duplicates and sort
-                ax.set_xticks(ticks_to_show_values)
-                ax.set_xticklabels([str(t) for t in ticks_to_show_values], rotation=90, ha='right')
-            else: # Fallback if no data
-                ax.set_xticks([])
-
-
-        # Graph 1: Financial Components by Station
-        fig1, ax1 = plt.subplots(figsize=(18, 9))
-        ax1.bar(financial_x_labels_str, merged_df['revenue'], label='Revenue', color='green')
-        ax1.bar(financial_x_labels_str, -merged_df['opex'], label='OPEX', color='orangered') # Changed color
-        ax1.bar(financial_x_labels_str, -merged_df['capex'], label='CAPEX', color='darkred') # Changed color
-        
-        penalty_text_info = f"Total Truck Penalty: {round(truck_penalty_for_print)}\nTotal Charger Penalty: {round(charger_penalty_for_print)}"
-        ax1.text(0.98, 0.98, penalty_text_info, ha='right', va='top', transform=ax1.transAxes, bbox=dict(boxstyle='round,pad=0.5', fc='gold', alpha=0.7))
-        ax1.set_xlabel('Station ID')
-        ax1.set_ylabel('Amount')
-        ax1.set_title('Financial Components by Station')
-        ax1.legend(loc='best')
-        set_xticks_by_50(ax1, financial_station_ids_int) # Apply custom ticks
-        ax1.axhline(0, color='black', linewidth=0.8)
-        ax1.grid(axis='y', linestyle='--', alpha=0.7)
-        plt.tight_layout()
-        graph_filename1 = "station_financial_components.png"
-        file_path1 = os.path.join(timestamped_folder_path, graph_filename1)
-        plt.savefig(file_path1)
-        print(f"Graph 'Station Financial Components' saved to: {file_path1}")
-        plt.close(fig1)
-
-        # Graph 2: Net Profit (Before Penalty) by Station
-        fig2, ax2 = plt.subplots(figsize=(18, 9))
-        net_profit_colors = ['mediumseagreen' if x >= 0 else 'tomato' for x in merged_df['net_profit_before_penalty']]
-        ax2.bar(financial_x_labels_str, merged_df['net_profit_before_penalty'], label='Net Profit (Before Penalty)', color=net_profit_colors)
-        ax2.set_xlabel('Station ID')
-        ax2.set_ylabel('Net Profit')
-        ax2.set_title('Net Profit by Station (Before Penalty)')
-        ax2.legend(loc='best')
-        set_xticks_by_50(ax2, financial_station_ids_int) # Apply custom ticks
-        ax2.axhline(0, color='black', linewidth=0.8)
-        ax2.grid(axis='y', linestyle='--', alpha=0.7)
-        plt.tight_layout()
-        graph_filename2 = "station_net_profit_before_penalty.png"
-        file_path2 = os.path.join(timestamped_folder_path, graph_filename2)
-        plt.savefig(file_path2)
-        print(f"Graph 'Net Profit by Station' saved to: {file_path2}")
-        plt.close(fig2)
-
-        # --- New Graphs from station_results_df ---
-        if self.station_results_df is not None and not self.station_results_df.empty and 'station_id' in self.station_results_df.columns:
-            try:
-                operational_station_ids_int = self.station_results_df['station_id'].astype(int)
-                operational_x_labels_str = operational_station_ids_int.astype(str)
-            except ValueError:
-                print("Warning: Could not convert 'station_id' in station_results_df to integer for operational graphs.")
-                operational_x_labels_str = self.station_results_df['station_id'].astype(str) # Fallback to string
-                operational_station_ids_int = pd.Series(range(len(self.station_results_df))) # Fallback for tick logic
-
-            # Graph 3: Total Charged Energy per Station
-            fig3, ax3 = plt.subplots(figsize=(18, 9))
-            ax3.bar(operational_x_labels_str, self.station_results_df['total_charged_energy_kWh'], label='Total Charged Energy (kWh)', color='dodgerblue')
-            avg_energy = self.station_results_df['total_charged_energy_kWh'].mean()
-            ax3.axhline(y=avg_energy, color='red', linestyle='--', linewidth=1.5, label=f'Average Energy: {avg_energy:.2f} kWh')
-            ax3.set_xlabel('Station ID')
-            ax3.set_ylabel('Total Charged Energy (kWh)')
-            ax3.set_title('Total Charged Energy per Station')
-            ax3.legend(loc='best')
-            set_xticks_by_50(ax3, operational_station_ids_int)
-            ax3.grid(axis='y', linestyle='--', alpha=0.7)
-            plt.tight_layout()
-            graph_filename3 = "station_total_charged_energy.png"
-            file_path3 = os.path.join(timestamped_folder_path, graph_filename3)
-            plt.savefig(file_path3)
-            print(f"Graph 'Total Charged Energy per Station' saved to: {file_path3}")
-            plt.close(fig3)
-
-            # Graph 4: Total Charging Events per Station
-            fig4, ax4 = plt.subplots(figsize=(18, 9))
-            ax4.bar(operational_x_labels_str, self.station_results_df['total_charging_events'], label='Total Charging Events', color='mediumpurple')
-            avg_events = self.station_results_df['total_charging_events'].mean()
-            ax4.axhline(y=avg_events, color='darkmagenta', linestyle='--', linewidth=1.5, label=f'Average Events: {avg_events:.2f}')
-            ax4.set_xlabel('Station ID')
-            ax4.set_ylabel('Total Charging Events')
-            ax4.set_title('Total Charging Events per Station')
-            ax4.legend(loc='best')
-            set_xticks_by_50(ax4, operational_station_ids_int)
-            ax4.grid(axis='y', linestyle='--', alpha=0.7)
-            plt.tight_layout()
-            graph_filename4 = "station_total_charging_events.png"
-            file_path4 = os.path.join(timestamped_folder_path, graph_filename4)
-            plt.savefig(file_path4)
-            print(f"Graph 'Total Charging Events per Station' saved to: {file_path4}")
-            plt.close(fig4)
-
-            fig5, ax5 = plt.subplots(figsize=(18, 9))
-
-            overall_max_queue_ever = self.station_results_df['max_queue_length'].max()
-            overall_avg_queue_length = self.station_results_df['avg_queue_length'].mean() # Calculate once
-
-            # 텍스트 정보 구성
-            queue_summary_text = (f"Overall Max Queue: {overall_max_queue_ever:.2f}\n"
-                                f"Overall Avg Queue (Line): {overall_avg_queue_length:.2f}")
-
-            ax5.text(0.98, 0.98, # x, y 좌표 (0.98, 0.98은 오른쪽 상단 근처)
-                    queue_summary_text,
-                    ha='right', va='top', # 수평 오른쪽 정렬, 수직 위쪽 정렬
-                    transform=ax5.transAxes, # ax5 축 기준 상대 좌표 사용
-                    fontsize=9, # 폰트 크기 조절 가능
-                    bbox=dict(boxstyle='round,pad=0.5', # 테두리 상자 스타일 (둥근 모서리, 내부 여백)
-                            fc='lightyellow', # 배경색 (facecolor)
-                            alpha=0.75))     # alpha는 bbox 딕셔너리 내부에 위치
-
-            # 막대 그래프 앞뒤 배치 (Max Queue가 배경, Avg Queue가 전경)
-
-            ax5.bar(operational_x_labels_str, self.station_results_df['max_queue_length'],
-                     label='Max Queue Length', color='#1f77b4', zorder=1)
-            ax5.bar(operational_x_labels_str, self.station_results_df['avg_queue_length'],
-                     label='Average Queue Length', color='#ff7f0e', zorder=2)
-
-            # axhline에 이미 계산된 overall_avg_queue_length 사용
-            ax5.axhline(y=overall_avg_queue_length, color='red', linestyle='--', linewidth=1.5, label=f'Overall Avg Queue Length: {overall_avg_queue_length:.2f}')
-
-            ax5.set_xlabel('Station ID')
-            ax5.set_ylabel('Queue Length (Number of Trucks)')
-            ax5.set_title('Average and Max Queue Length per Station')
-            ax5.legend(loc='best')
-            set_xticks_by_50(ax5, operational_station_ids_int)
-            ax5.grid(axis='y', linestyle='--', alpha=0.7)
-            plt.tight_layout()
-            plt.savefig(os.path.join(timestamped_folder_path, "station_queue_lengths.png"))
-            print(f"Graph 'Queue Lengths per Station' saved.")
-            plt.close(fig5)
-
-            # Graph 6: Average Waiting Time per Station
-            fig6, ax6 = plt.subplots(figsize=(18, 9))
-            ax6.bar(operational_x_labels_str, self.station_results_df['avg_waiting_time_min'], label='Average Waiting Time (min)', color='teal')
-            avg_wait_time = self.station_results_df['avg_waiting_time_min'].mean()
-            ax6.axhline(y=avg_wait_time, color='darkcyan', linestyle='--', linewidth=1.5, label=f'Overall Avg Wait Time: {avg_wait_time:.2f} min')
-            ax6.set_xlabel('Station ID')
-            ax6.set_ylabel('Average Waiting Time (minutes)')
-            ax6.set_title('Average Waiting Time per Station')
-            ax6.legend(loc='best')
-            set_xticks_by_50(ax6, operational_station_ids_int)
-            ax6.grid(axis='y', linestyle='--', alpha=0.7)
-            plt.tight_layout()
-            graph_filename6 = "station_avg_waiting_time.png"
-            file_path6 = os.path.join(timestamped_folder_path, graph_filename6)
-            plt.savefig(file_path6)
-            print(f"Graph 'Average Waiting Time per Station' saved to: {file_path6}")
-            plt.close(fig6)
-        else:
-            print("Info: station_results_df is empty or 'station_id' column is missing. Skipping operational graphs.")
-
-        return of_value
-
-
-
+    
     def load_stations(self, df):
         """
         DataFrame에서 충전소 정보를 읽어 Station 객체 리스트를 생성합니다.
@@ -621,6 +546,7 @@ class Simulator:
             for idx, row in df.iterrows() 
         ]
         return stations
+
 
 # --- 전역 함수 ---
 
@@ -784,12 +710,12 @@ def load_station_df(station_file_path):
 
 # 메인 함수 (스크립트 실행 시 호출)
 if __name__ == '__main__':
-    car_paths_folder = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_stop_added)"
-    station_file_path = r"C:\Users\ADMIN\Desktop\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
+    car_paths_folder = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_90km)"
+    station_file_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
 
     simulating_hours = 36
     unit_time = 20 
-    number_of_trucks = 7062
+    number_of_trucks = 5946
     number_of_max_chargers = 2000 
 
     print("--- 데이터 로딩 시작 ---") 
