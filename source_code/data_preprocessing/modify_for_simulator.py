@@ -87,12 +87,12 @@ def process_csv_files(file_path_pattern, schema, parquet_output_base_dir, holida
 
     # --- 3-2. 행정구역/지역 조회 데이터 로드 및 캐싱 (성능 향상 목적) ---
     try:
-        admin_path = r"D:\project\HDT_EVCS_Opt\Data\Raw_Data\Metropolitan area\LINK_ID_DATASET.csv"
+        admin_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Raw_Data\Metropolitan area\LINK_ID_DATASET.csv"
         admin_schema = StructType([ StructField("sido_id", IntegerType(), True), StructField("sigungu_id", IntegerType(), True), StructField("emd_id", IntegerType(), True)])
         admin_df_raw = spark.read.csv(admin_path, header=True, schema=admin_schema)
         admin_df = admin_df_raw.withColumn("SIGUNGU_ID_ADMIN", substring(col("sigungu_id").cast("string"), 1, 4)) # 조인용 4자리 시군구 코드
 
-        area_csv_path = r"D:\project\HDT_EVCS_Opt\Data\Raw_Data\Metropolitan area\AREA_ID_DATASET.csv"
+        area_csv_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Raw_Data\Metropolitan area\AREA_ID_DATASET.csv"
         area_schema = StructType([ StructField("AREA_ID", IntegerType(), True), StructField("SIGUNGU_ID", StringType(), True)])
         area_df = spark.read.csv(area_csv_path, header=True, schema=area_schema)
 
@@ -239,9 +239,9 @@ def process_csv_files(file_path_pattern, schema, parquet_output_base_dir, holida
             # --- 3-11. 하루 총 주행 거리 <= 120km 인 OBU 필터링 ---
             window_obu_max = Window.partitionBy("OBU_ID")
             df_with_max = df_combined.withColumn("max_cum_length_per_obu", max("CUMULATIVE_LINK_LENGTH_KM").over(window_obu_max))
-            df_filtered = df_with_max.filter(col("max_cum_length_per_obu") > 120) \
+            df_filtered = df_with_max.filter(col("max_cum_length_per_obu") > 90) \
                                      .drop("max_cum_length_per_obu")
-            print(f"  - 최종 필터링 완료 (OBU_ID 별 하루 총 누적 거리 <= 120km 인 OBU 전체 제거)")
+            print(f"  - 최종 필터링 완료 (OBU_ID 별 하루 총 누적 거리 <= 90km 인 OBU 전체 제거)")
             del df_with_max, df_combined
 
             # --- 3-12. 최종 컬럼 선택, 이름 변경, 정렬, 포맷팅 ---
@@ -295,8 +295,8 @@ def process_csv_files(file_path_pattern, schema, parquet_output_base_dir, holida
     print(f"전체 작업 완료. 총 소요 시간: {total_minutes:.2f} 분.")
 
 # 4. 파일 경로 정의 및 처리 함수 실행
-raw_file_path = r"D:\project\HDT_EVCS_Opt\Data\Raw_Data\Trajectory\*.csv"
-parquet_output_base_dir_all_days = r"D:\project\HDT_EVCS_Opt\Data\Processed_Data\simulator\Trajectory(DAY_stop_added)"
+raw_file_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Raw_Data\Trajectory\*.csv"  # 원본 CSV 파일 경로 패턴
+parquet_output_base_dir_all_days = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_90km)"
 
 # 출력 디렉토리 생성 (없는 경우)
 if not os.path.exists(parquet_output_base_dir_all_days):
