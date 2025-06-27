@@ -333,17 +333,14 @@ class Simulator:
 
             # 3. 충전소 대기 시간 페널티
             HOURLY_REVENUE_VALUE = 11000000 / (10.9 * 22.4)  # 시간당 매출 가치
-            WAITING_TOLERANCE_MINUTES = 5
             station_waiting_penalties = {}
 
             for station in self.stations:
                 station_penalty = 0.0
                 if station.waiting_times:
                     for wait_time in station.waiting_times:
-                        penalty_applicable_minutes = max(0, wait_time - WAITING_TOLERANCE_MINUTES)
-                        if penalty_applicable_minutes > 0:
-                            penalty_hours = penalty_applicable_minutes / 60.0
-                            station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
+                        penalty_hours = wait_time / 60.0
+                        station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
                 station_waiting_penalties[station.station_id] = station_penalty
             
             total_waiting_penalty = sum(station_waiting_penalties.values())
@@ -366,39 +363,57 @@ class Simulator:
 
     def calculate_of(self):
             """
-            OF(Objective Function) 값을 계산하고 재무/운영 요약 및 그래프를 저장합니다.
-            (financial_summary_by_station.csv에 대기 시간 페널티 열 추가)
+            OF(목적 함수) 값을 최종 계산하고, 시뮬레이션 결과를 요약하여 저장 및 시각화합니다.
+
+            이 함수는 시뮬레이션의 재무적/운영적 성과를 종합하는 핵심적인 역할을 수행합니다.
+            1. 수익(Revenue), 운영비(OPEX), 자본비(CAPEX), 페널티(Penalty)를 각각 계산합니다.
+            2. 계산된 지표들을 충전소 ID 기준으로 병합하여 종합 재무 데이터프레임을 생성합니다.
+            3. 목적 함수 값 (총 수익 - 총 비용 - 총 페널티)을 산출합니다.
+            4. 최종 요약 정보를 콘솔에 출력하고, 상세 결과는 CSV 파일로 저장합니다.
+            5. 재무 및 운영 지표에 대한 그래프를 생성하여 PNG 파일로 저장합니다.
+            
+            Returns:
+                float: 최종 계산된 목적 함수(OF) 값.
             """
+            # --- 1. 초기 데이터 유효성 검사 ---
+            # 분석의 기반이 되는 충전소 결과 데이터프레임이 비어있는 경우, 계산을 중단하고 0을 반환합니다.
             if self.station_results_df is None or self.station_results_df.empty:
-                print("Warning: station_results_df is empty or not generated. OF calculation aborted, returning 0.")
+                print("Warning: station_results_df가 비어있어 OF 계산을 중단합니다.")
                 return 0
 
+            # --- 2. 재무 지표 계산 ---
+            # 각 헬퍼 함수를 호출하여 충전소별 수익, 운영비, 자본비, 페널티를 계산합니다.
             revenue_df = self.calculate_revenue(self.station_results_df)
             opex_df = self.calculate_OPEX(self.station_results_df)
             capex_df = self.calculate_CAPEX(self.station_results_df)
             penalty_summary_df, station_penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)
 
-            # 재무 관련 DataFrame 병합
+            # --- 3. 데이터 병합 및 전처리 ---
+            # 계산된 재무 지표들을 'station_id'를 기준으로 하나의 데이터프레임으로 통합합니다.
             merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
             merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
-            # [변경] 충전소별 대기 시간 페널티 데이터 병합
-            merged_df = pd.merge(merged_df, station_penalty_df, on='station_id', how='outer')
+            merged_df = pd.merge(merged_df, station_penalty_df, on='station_id', how='outer') # 충전소별 대기 페널티 추가
             
+            # 데이터가 없는 경우(NaN) 0으로 채우고, ID를 정수형으로 변환합니다.
             merged_df.fillna(0, inplace=True)
-            
             if 'station_id' in merged_df.columns:
                 merged_df['station_id'] = merged_df['station_id'].astype(int)
             
+            # 페널티를 제외한 순수익을 계산합니다.
             merged_df['net_profit_before_penalty'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
 
+            # --- 4. 목적 함수(OF) 값 계산 ---
+            # 전체 재무 지표의 합계를 구합니다.
             total_revenue = merged_df['revenue'].sum()
             total_opex = merged_df['opex'].sum()
             total_capex = merged_df['capex'].sum()
             total_penalty = penalty_summary_df['total_penalty'].iloc[0] if not penalty_summary_df.empty else 0
             
+            # 최종 OF = 총 수익 - 총 운영비 - 총 자본비 - 총 페널티
             of_value = round(total_revenue - total_opex - total_capex - total_penalty)
 
-            # --- Financial Summary ---
+            # --- 5. 최종 결과 요약 출력 ---
+            # 계산된 주요 재무 지표들을 콘솔에 출력합니다.
             truck_p = penalty_summary_df['truck_penalty'].iloc[0] if not penalty_summary_df.empty else 0
             charger_p = penalty_summary_df['charger_penalty'].iloc[0] if not penalty_summary_df.empty else 0
             waiting_p = penalty_summary_df['waiting_penalty'].iloc[0] if not penalty_summary_df.empty else 0
@@ -411,28 +426,30 @@ class Simulator:
             print(f"Objective Function (OF) Value: {of_value}")
             print(f"-------------------")
 
-            # --- Save Results ---
+            # --- 6. 결과 파일 저장 ---
+            # 분석 결과를 저장할 타임스탬프 폴더를 생성합니다.
             base_save_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Result"
             current_timestamp_str = datetime.now().strftime("%Y-%m-%d %H-%M")
             timestamped_folder_path = os.path.join(base_save_path, current_timestamp_str)
             os.makedirs(timestamped_folder_path, exist_ok=True)
-            print(f"Results will be saved in: {timestamped_folder_path}")
+            print(f"결과가 다음 경로에 저장됩니다: {timestamped_folder_path}")
 
+            # 충전소별 운영 요약 및 재무 요약 데이터를 CSV 파일로 저장합니다.
             self.station_results_df.to_csv(os.path.join(timestamped_folder_path, "station_operational_summary.csv"), index=False, encoding='utf-8-sig')
-            # 이제 merged_df에 'waiting_penalty' 열이 포함된 상태로 저장됩니다.
             merged_df.to_csv(os.path.join(timestamped_folder_path, "financial_summary_by_station.csv"), index=False, encoding='utf-8-sig')
-            print(f"Result files saved.")
+            print(f"결과 파일 저장 완료.")
 
-            # --- Graphing ---
-            # (그래프 생성 코드는 이전과 동일하므로 생략)
+            # --- 7. 결과 시각화 ---
+            # 그래프 생성을 위한 기본 설정을 준비합니다.
             if 'station_id' not in merged_df.columns or merged_df['station_id'].isnull().all():
-                print("Error: 'station_id' is missing. Cannot generate graphs.")
+                print("오류: 'station_id'가 없어 그래프를 생성할 수 없습니다.")
                 return of_value
             
             merged_df.sort_values('station_id', inplace=True)
             financial_station_ids_int = merged_df['station_id']
             financial_x_labels_str = financial_station_ids_int.astype(str)
 
+            # x축 레이블을 50단위로 설정하는 헬퍼 함수입니다.
             def set_xticks_by_50(ax, station_ids_int):
                 if station_ids_int.empty: return
                 unique_sorted_ids = station_ids_int.unique()
@@ -446,21 +463,25 @@ class Simulator:
                     ax.set_xticks(sorted(list(set(ticks_to_show))))
                     ax.set_xticklabels([str(t) for t in sorted(list(set(ticks_to_show)))], rotation=90, ha='right')
 
-            # Graph 1: Financial Components
+            # 그래프 1: 충전소별 재무 구성 요소 (수익, OPEX, CAPEX, 대기 페널티)
             fig1, ax1 = plt.subplots(figsize=(18, 9))
             ax1.bar(financial_x_labels_str, merged_df['revenue'], label='Revenue', color='green')
-            ax1.bar(financial_x_labels_str, -merged_df['opex'], label='OPEX', color='orangered')
-            ax1.bar(financial_x_labels_str, -merged_df['capex'], label='CAPEX', color='darkred')
+            neg_opex = -merged_df['opex']
+            neg_capex = -merged_df['capex']
+            neg_waiting_penalty = -merged_df['waiting_penalty']
+            ax1.bar(financial_x_labels_str, neg_opex, label='OPEX', color='orangered')
+            ax1.bar(financial_x_labels_str, neg_capex, bottom=neg_opex, label='CAPEX', color='darkred')
+            ax1.bar(financial_x_labels_str, neg_waiting_penalty, bottom=neg_opex + neg_capex, label='Waiting Penalty', color='gold')
             penalty_text = f"Truck Penalty: {round(truck_p)}\nCharger Penalty: {round(charger_p)}\nWaiting Penalty: {round(waiting_p)}"
-            ax1.text(0.98, 0.98, penalty_text, ha='right', va='top', transform=ax1.transAxes, bbox=dict(boxstyle='round,pad=0.5', fc='gold', alpha=0.7))
-            ax1.set_xlabel('Station ID'); ax1.set_ylabel('Amount'); ax1.set_title('Financial Components by Station')
+            ax1.text(0.98, 0.98, penalty_text, ha='right', va='top', transform=ax1.transAxes, bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.8))
+            ax1.set_xlabel('Station ID'); ax1.set_ylabel('Amount (KRW)'); ax1.set_title('Financial Components by Station')
             ax1.legend(loc='best'); set_xticks_by_50(ax1, financial_station_ids_int)
             ax1.axhline(0, color='black', linewidth=0.8); ax1.grid(axis='y', linestyle='--', alpha=0.7)
             plt.tight_layout()
             plt.savefig(os.path.join(timestamped_folder_path, "station_financial_components.png"))
             plt.close(fig1)
 
-            # Graph 2: Net Profit
+            # 그래프 2: 충전소별 순이익 (페널티 제외)
             fig2, ax2 = plt.subplots(figsize=(18, 9))
             net_profit_colors = ['mediumseagreen' if x >= 0 else 'tomato' for x in merged_df['net_profit_before_penalty']]
             ax2.bar(financial_x_labels_str, merged_df['net_profit_before_penalty'], label='Net Profit (Before Penalty)', color=net_profit_colors)
@@ -471,7 +492,7 @@ class Simulator:
             plt.savefig(os.path.join(timestamped_folder_path, "station_net_profit_before_penalty.png"))
             plt.close(fig2)
 
-            # --- Operational Graphs ---
+            # 운영 관련 지표 시각화를 위한 데이터 준비
             if self.station_results_df is not None and not self.station_results_df.empty:
                 op_df = pd.merge(self.station_results_df, station_penalty_df, on='station_id', how='left').fillna(0)
                 op_df['station_id'] = op_df['station_id'].astype(int)
@@ -479,6 +500,7 @@ class Simulator:
                 op_station_ids_int = op_df['station_id']
                 op_x_labels_str = op_station_ids_int.astype(str)
 
+                # 시각화할 운영 지표 목록 정의
                 graph_configs = [
                     {'y_col': 'total_charged_energy_kWh', 'title': 'Total Charged Energy per Station', 'ylabel': 'Total Charged Energy (kWh)', 'color': 'dodgerblue', 'avg_color': 'red'},
                     {'y_col': 'total_charging_events', 'title': 'Total Charging Events per Station', 'ylabel': 'Total Charging Events', 'color': 'mediumpurple', 'avg_color': 'darkmagenta'},
@@ -487,6 +509,7 @@ class Simulator:
                     {'y_col': 'waiting_penalty', 'title': 'Waiting Time Penalty per Station', 'ylabel': 'Waiting Time Penalty (KRW)', 'color': 'lightcoral', 'avg_color': 'darkred'}
                 ]
 
+                # 각 운영 지표에 대해 반복적으로 막대 그래프 생성 및 저장
                 for config in graph_configs:
                     fig, ax = plt.subplots(figsize=(18, 9))
                     ax.bar(op_x_labels_str, op_df[config['y_col']], label=config['ylabel'], color=config['color'])
@@ -498,7 +521,7 @@ class Simulator:
                     plt.savefig(os.path.join(timestamped_folder_path, f"station_{config['y_col']}.png"))
                     plt.close(fig)
 
-                # Graph: Queue Lengths
+                # 그래프 3: 충전소별 평균/최대 대기열 길이
                 fig, ax = plt.subplots(figsize=(18, 9))
                 ax.bar(op_x_labels_str, op_df['max_queue_length'], label='Max Queue Length', color='#1f77b4')
                 ax.bar(op_x_labels_str, op_df['avg_queue_length'], label='Average Queue Length', color='#ff7f0e')
@@ -510,21 +533,61 @@ class Simulator:
                 plt.savefig(os.path.join(timestamped_folder_path, "station_queue_lengths.png"))
                 plt.close(fig)
 
-                # Graph: Avg Waiting Time vs. Number of Chargers (Overlay)
-                fig, ax = plt.subplots(figsize=(18, 9))
-                bar_width = 0.8
-                rects1 = ax.bar(op_x_labels_str, op_df['avg_waiting_time_min'], width=bar_width, color='teal', label='Average Waiting Time (min)', zorder=2)
-                ax.set_xlabel('Station ID', fontsize=12); ax.set_ylabel('Average Waiting Time (minutes)', color='teal', fontsize=12); ax.tick_params(axis='y', labelcolor='teal')
-                ax2 = ax.twinx()
-                rects2 = ax2.bar(op_x_labels_str, op_df['num_of_charger'], width=bar_width, color='orangered', label='Number of Chargers', alpha=0.6, zorder=1)
-                ax2.set_ylabel('Number of Chargers', color='orangered', fontsize=12); ax2.tick_params(axis='y', labelcolor='orangered'); ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-                ax.set_title('Average Waiting Time and Number of Chargers per Station (Overlay)', fontsize=16)
-                set_xticks_by_50(ax, op_station_ids_int); ax.legend(handles=[rects1, rects2], loc='upper left'); fig.tight_layout()
-                plt.savefig(os.path.join(timestamped_folder_path, "station_wait_time_vs_chargers_overlay.png"), dpi=300)
+                # 그래프 4: 충전기 수와 평균 대기 시간의 관계 (산점도)
+                # 각 충전소를 하나의 점으로 표현하여, 설치된 충전기 수(x축)가 
+                # 해당 충전소의 평균 대기 시간(y축)에 미치는 영향을 분석합니다.
+                fig, ax = plt.subplots(figsize=(12, 8))
+
+                # 유효한 데이터 (충전기가 1개 이상 설치된 충전소)만 필터링합니다.
+                plot_data = op_df[op_df['num_of_charger'] > 0].copy()
+
+                # 산점도(Scatter Plot)를 생성합니다.
+                # jitter를 적용하여 x축 값이 겹치는 점들을 시각적으로 분리합니다.
+                plot_data['num_of_charger_jitter'] = plot_data['num_of_charger'] + np.random.normal(0, 0.1, size=len(plot_data))
+                
+                ax.scatter(
+                    plot_data['num_of_charger_jitter'], 
+                    plot_data['avg_waiting_time_min'], 
+                    alpha=0.6,          # 점의 투명도
+                    s=50,               # 점의 크기
+                    label='Stations'    # 범례 레이블
+                )
+
+                # 데이터의 추세를 파악하기 위한 추세선(1차 회귀선)을 추가합니다.
+                if not plot_data.empty:
+                    x_data = plot_data['num_of_charger']
+                    y_data = plot_data['avg_waiting_time_min']
+                    
+                    # numpy.polyfit을 사용하여 1차 다항식의 계수(기울기, y절편)를 계산합니다.
+                    slope, intercept = np.polyfit(x_data, y_data, 1)
+                    
+                    # x축 범위에 맞춰 추세선을 그립니다.
+                    x_trend = np.array(sorted(x_data.unique()))
+                    ax.plot(x_trend, slope * x_trend + intercept, color='red', linestyle='--', 
+                            label=f'Trend (y={slope:.2f}x + {intercept:.2f})')
+
+                # 축 레이블과 그래프 제목을 설정합니다.
+                ax.set_xlabel('Number of Chargers per Station', fontsize=12)
+                ax.set_ylabel('Average Waiting Time (minutes)', fontsize=12)
+                ax.set_title('Relationship between Number of Chargers and Average Waiting Time', fontsize=16)
+
+                # x축 눈금을 정수 단위로 명확하게 표시합니다.
+                ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+                # y축은 0부터 시작하도록 설정합니다.
+                ax.set_ylim(bottom=0)
+                
+                # 가독성을 위해 그리드와 범례를 추가합니다.
+                ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+                ax.legend()
+
+                # 레이아웃을 자동으로 조정한 후, 고해상도 이미지 파일로 저장합니다.
+                fig.tight_layout()
+                plt.savefig(os.path.join(timestamped_folder_path, "station_chargers_vs_wait_time_scatter.png"), dpi=300)
                 plt.close(fig)
+                
+                print(f"운영 관련 그래프 저장 완료.")
 
-                print(f"Operational graphs saved.")
-
+            # 최종 OF 값을 반환합니다.
             return of_value
     
     def load_stations(self, df):

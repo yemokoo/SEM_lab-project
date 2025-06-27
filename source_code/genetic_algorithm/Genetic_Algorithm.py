@@ -614,7 +614,7 @@ def genetic_algorithm():
 
                 # no_improvement_count 증가/초기화 조건 추가
                 if generation >= CONVERGENCE_CHECK_START_GENERATIONS:
-                    if abs(charger_change) <= 0.01 and abs(fitness_mean_change) <= 0.005:
+                    if abs(charger_change) <= 0.01 and abs(fitness_mean_change) <= 0.01:
                         no_improvement_count += 1
                         print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
                         print(f"{no_improvement_count} 세대 동안 개선 없음")

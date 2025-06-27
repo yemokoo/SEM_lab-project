@@ -287,17 +287,14 @@ class Simulator:
 
             # 3. 충전소 대기 시간 페널티
             HOURLY_REVENUE_VALUE = 11000000 / (10.9 * 22.4)  # 시간당 매출 가치
-            WAITING_TOLERANCE_MINUTES = 5
             station_waiting_penalties = {}
 
             for station in self.stations:
                 station_penalty = 0.0
                 if station.waiting_times:
                     for wait_time in station.waiting_times:
-                        penalty_applicable_minutes = max(0, wait_time - WAITING_TOLERANCE_MINUTES)
-                        if penalty_applicable_minutes > 0:
-                            penalty_hours = penalty_applicable_minutes / 60.0
-                            station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
+                        penalty_hours = wait_time / 60.0
+                        station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
                 station_waiting_penalties[station.station_id] = station_penalty
             
             total_waiting_penalty = sum(station_waiting_penalties.values())
