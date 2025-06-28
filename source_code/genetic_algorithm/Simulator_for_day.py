@@ -144,12 +144,12 @@ class Simulator:
 
     def analyze_results(self):
         """
-        시뮬레이션 결과를 분석하고 최종 OF 값을 계산합니다.
+        시뮬레이션 결과를 분석하고 최종 OF(Objective Function) 값을 계산합니다.
         """
-
+        # 각 충전소의 운영 결과를 집계하여 station_results_df를 생성합니다.
         station_data = [
             {'station_id': station.station_id, 
-             'link_id': station.link_id, # station_id 외에 link_id도 추가하면 유용할 수 있음
+             'link_id': station.link_id,
              'num_of_charger': station.num_of_chargers,
              'total_charged_energy_kWh': sum(c.total_charged_energy for c in station.chargers),
              'total_charging_events': sum(c.charging_events_count for c in station.chargers),
@@ -161,10 +161,18 @@ class Simulator:
         ]
         self.station_results_df = pd.DataFrame(station_data)
 
-        # truck_results_df가 None이거나 비어있을 경우 처리
+        # 시뮬레이션 결과가 담긴 truck_results_df를 성공과 실패 그룹으로 분리합니다.
         if self.truck_results_df is None or self.truck_results_df.empty:
-             self.failed_trucks_df = pd.DataFrame(columns=self.truck_results_df.columns if self.truck_results_df is not None else []) # 빈 DF 생성
+            # 결과가 없는 경우, 분석을 위해 빈 데이터프레임을 생성합니다.
+            self.successful_trucks_df = pd.DataFrame(columns=self.truck_results_df.columns if self.truck_results_df is not None else [])
+            self.failed_trucks_df = pd.DataFrame(columns=self.truck_results_df.columns if self.truck_results_df is not None else [])
         else:
+            # 성공 트럭: destination_reached 플래그가 True인 경우
+            self.successful_trucks_df = self.truck_results_df[
+                self.truck_results_df['destination_reached'] == True
+            ].copy()
+
+            # 실패 트럭: destination_reached가 False이고, 배터리 부족 또는 시뮬레이션 시간 초과로 중단된 경우
             self.failed_trucks_df = self.truck_results_df[
                 (self.truck_results_df['destination_reached'] == False) &
                 (
@@ -172,7 +180,8 @@ class Simulator:
                     (self.truck_results_df['stopped_due_to_simulation_end'] == True)
                 )
             ].copy()
-
+        
+        # 재무 분석 및 OF 계산을 수행합니다.
         of = self.calculate_of()
         return of
 
@@ -255,98 +264,139 @@ class Simulator:
         return result_df
 
 
-    def calculate_penalty(self, failed_trucks_df, station_df):
-            """
-            목적지 미도착, 충전기 수 초과, 충전소 대기 시간에 대한 페널티를 계산하고,
-            충전소별 대기 페널티 상세 내역을 함께 반환합니다.
-            """
-            # 1. 목적지 미도착 트럭 페널티
-            truck_penalty = 0.0
-            if failed_trucks_df is not None and not failed_trucks_df.empty:
-                planned_dist = failed_trucks_df['total_distance_planned']
-                last_stop_dist = failed_trucks_df['traveled_distance_at_last_stop85'].fillna(0)
-                distance_for_penalty = np.where(
-                    last_stop_dist <= 0,
-                    planned_dist / 2,
-                    np.maximum(0, planned_dist - last_stop_dist) / 2
-                )
-                choice = np.random.choice([True, False], size=len(failed_trucks_df))
-                penalty = np.where(
+    def calculate_penalty(self, successful_trucks_df, failed_trucks_df, station_df):
+        """
+        시뮬레이션 결과에 기반하여 다양한 유형의 페널티를 계산합니다.
+        - 미도착 트럭 페널티, 도착 트럭 지연 페널티, 충전기 수 초과 페널티, 대기 시간 페널티
+        """
+        # --- 1. 트럭 관련 페널티 계산 ---
+        
+        # 1-1. 목적지 미도착 트럭에 대한 페널티
+        failed_truck_penalty = 0.0
+        if failed_trucks_df is not None and not failed_trucks_df.empty:
+            # 미도착 지점까지의 남은 거리에 비례하여 페널티를 계산합니다.
+            planned_dist = failed_trucks_df['total_distance_planned']
+            last_stop_dist = failed_trucks_df['traveled_distance_at_last_stop85'].fillna(0)
+            distance_for_penalty = np.where(
+                last_stop_dist <= 0,
+                planned_dist / 2,
+                np.maximum(0, planned_dist - last_stop_dist) / 2
+            )
+            choice = np.random.choice([True, False], size=len(failed_trucks_df))
+            penalty = np.where(
+                choice,
+                136395.90 + 3221.87 * distance_for_penalty - 2.72 * distance_for_penalty**2,
+                121628.18 + 2765.50 * distance_for_penalty - 2.00 * distance_for_penalty**2
+            )
+            failed_truck_penalty = np.maximum(0, penalty).sum()
+
+        # 1-2. 목적지에 도착했으나 지연된 트럭에 대한 페널티
+        late_truck_penalty = 0.0
+        if successful_trucks_df is not None and not successful_trucks_df.empty:
+            required_cols = ['starting_time', 'reaching_time', 'actual_reached_time', 'total_distance_planned']
+            if all(col in successful_trucks_df.columns for col in required_cols):
+                # 예상 순수 주행 시간(분)을 기반으로, 주행 1시간당 15분의 충전 마진을 부여합니다.
+                driving_duration = successful_trucks_df['reaching_time'] - successful_trucks_df['starting_time']
+                charging_margin = (driving_duration / 60.0) * 15.0
+                
+                # 마진을 포함한 허용 도착 시간과 실제 도착 시간의 차이를 통해 지연 시간(분)을 계산합니다.
+                allowed_arrival_time = successful_trucks_df['reaching_time'] + charging_margin
+                delay_minutes = successful_trucks_df['actual_reached_time'] - allowed_arrival_time
+
+                # 페널티의 기준이 되는 '베이스 위약금'을 전체 운행 거리를 기반으로 산정합니다.
+                distance_for_penalty = successful_trucks_df['total_distance_planned']
+                choice = np.random.choice([True, False], size=len(successful_trucks_df))
+                base_penalty_per_truck = np.where(
                     choice,
                     136395.90 + 3221.87 * distance_for_penalty - 2.72 * distance_for_penalty**2,
                     121628.18 + 2765.50 * distance_for_penalty - 2.00 * distance_for_penalty**2
                 )
-                truck_penalty = np.maximum(0, penalty).sum()
+                base_penalty_per_truck = np.maximum(0, base_penalty_per_truck)
 
-            # 2. 최대 충전기 수 초과 페널티
-            charger_penalty = 0.0
-            number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
-            if number_of_total_chargers > self.number_of_max_chargers:
-                charger_cost_per_unit = 80000000
-                charger_penalty = float(charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers))
+                # 지연 시간에 따라 차등적인 페널티 비율(10%, 20%)을 적용합니다.
+                conditions = [
+                    delay_minutes > 120,                          # 2시간 초과 지연
+                    (delay_minutes > 60) & (delay_minutes <= 120) # 1시간 초과 2시간 이하 지연
+                ]
+                penalty_rates = [0.20, 0.10]
+                actual_penalty_per_truck = np.select(conditions, 
+                                                     [base_penalty_per_truck * rate for rate in penalty_rates], 
+                                                     default=0)
+                late_truck_penalty = actual_penalty_per_truck.sum()
 
-            # 3. 충전소 대기 시간 페널티
-            HOURLY_REVENUE_VALUE = 11000000 / (10.9 * 22.4)  # 시간당 매출 가치
-            station_waiting_penalties = {}
+        total_truck_penalty = failed_truck_penalty + late_truck_penalty
 
-            for station in self.stations:
-                station_penalty = 0.0
-                if station.waiting_times:
-                    for wait_time in station.waiting_times:
-                        penalty_hours = wait_time / 60.0
-                        station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
-                station_waiting_penalties[station.station_id] = station_penalty
-            
-            total_waiting_penalty = sum(station_waiting_penalties.values())
+        # --- 2. 최대 충전기 설치 가능 대수 초과에 대한 페널티 ---
+        charger_penalty = 0.0
+        number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
+        if number_of_total_chargers > self.number_of_max_chargers:
+            charger_cost_per_unit = 80000000
+            charger_penalty = float(charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers))
 
-            # 4. 페널티 합산 및 결과 반환
-            total_penalty = truck_penalty + charger_penalty + total_waiting_penalty
-            
-            summary_results = {
-                'truck_penalty': truck_penalty,
-                'charger_penalty': charger_penalty,
-                'waiting_penalty': total_waiting_penalty,
-                'total_penalty': total_penalty
-            }
-            summary_df = pd.DataFrame([summary_results])
-            
-            station_penalty_df = pd.DataFrame(list(station_waiting_penalties.items()), columns=['station_id', 'waiting_penalty'])
-            
-            return summary_df, station_penalty_df
-    
+        # --- 3. 충전소에서 발생한 총 대기 시간에 대한 페널티 (기회비용) ---
+        HOURLY_REVENUE_VALUE = 11000000 / (10.9 * 22.4)
+        station_waiting_penalties = {}
+        for station in self.stations:
+            station_penalty = 0.0
+            if station.waiting_times:
+                for wait_time in station.waiting_times:
+                    penalty_hours = wait_time / 60.0
+                    station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
+            station_waiting_penalties[station.station_id] = station_penalty
+        total_waiting_penalty = sum(station_waiting_penalties.values())
+
+        # --- 4. 모든 페널티 항목을 합산하고 결과를 DataFrame 형식으로 반환합니다. ---
+        total_penalty = total_truck_penalty + charger_penalty + total_waiting_penalty
+        summary_results = {
+            'failed_truck_penalty': failed_truck_penalty,
+            'late_truck_penalty': late_truck_penalty,
+            'truck_penalty': total_truck_penalty,
+            'charger_penalty': charger_penalty,
+            'waiting_penalty': total_waiting_penalty,
+            'total_penalty': total_penalty
+        }
+        summary_df = pd.DataFrame([summary_results])
+        station_penalty_df = pd.DataFrame(list(station_waiting_penalties.items()), columns=['station_id', 'waiting_penalty'])
+        
+        return summary_df, station_penalty_df
 
     def calculate_of(self):
-            """
-            OF(Objective Function) 값을 계산하고 재무/운영 요약 및 그래프를 저장합니다.
-            (financial_summary_by_station.csv에 대기 시간 페널티 열 추가)
-            """
+        """
+        OF(Objective Function) 값을 계산하고 재무/운영 요약을 저장합니다.
+        OF = 총수익 - 총운영비용 - 총자본비용 - 총페널티
+        """
+        # 수익, 운영비용(OPEX), 자본비용(CAPEX)을 각각 계산합니다.
+        revenue_df = self.calculate_revenue(self.station_results_df)
+        opex_df = self.calculate_OPEX(self.station_results_df)
+        capex_df = self.calculate_CAPEX(self.station_results_df)
+        
+        # 분리된 성공/실패 트럭 데이터를 기반으로 페널티를 계산합니다.
+        penalty_summary_df, station_penalty_df = self.calculate_penalty(
+            self.successful_trucks_df, self.failed_trucks_df, self.station_results_df
+        )
 
-            revenue_df = self.calculate_revenue(self.station_results_df)
-            opex_df = self.calculate_OPEX(self.station_results_df)
-            capex_df = self.calculate_CAPEX(self.station_results_df)
-            penalty_summary_df, station_penalty_df = self.calculate_penalty(self.failed_trucks_df, self.station_results_df)
+        # 재무 및 페널티 관련 데이터프레임을 하나로 병합합니다.
+        merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
+        merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
+        merged_df = pd.merge(merged_df, station_penalty_df, on='station_id', how='outer')
+        merged_df.fillna(0, inplace=True)
+        
+        if 'station_id' in merged_df.columns:
+            merged_df['station_id'] = merged_df['station_id'].astype(int)
+        
+        # 페널티 차감 전 순이익을 계산합니다.
+        merged_df['net_profit_before_penalty'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
 
-            # 재무 관련 DataFrame 병합
-            merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
-            merged_df = pd.merge(merged_df, capex_df, on='station_id', how='outer')
-            # [변경] 충전소별 대기 시간 페널티 데이터 병합
-            merged_df = pd.merge(merged_df, station_penalty_df, on='station_id', how='outer')
-            
-            merged_df.fillna(0, inplace=True)
-            
-            if 'station_id' in merged_df.columns:
-                merged_df['station_id'] = merged_df['station_id'].astype(int)
-            
-            merged_df['net_profit_before_penalty'] = merged_df['revenue'] - merged_df['opex'] - merged_df['capex']
+        # 전체 네트워크의 재무 지표를 합산합니다.
+        total_revenue = merged_df['revenue'].sum()
+        total_opex = merged_df['opex'].sum()
+        total_capex = merged_df['capex'].sum()
+        total_penalty = penalty_summary_df['total_penalty'].iloc[0] if not penalty_summary_df.empty else 0
+        
+        # 최종 목적 함수(OF) 값을 계산합니다.
+        of_value = round(total_revenue - total_opex - total_capex - total_penalty)
 
-            total_revenue = merged_df['revenue'].sum()
-            total_opex = merged_df['opex'].sum()
-            total_capex = merged_df['capex'].sum()
-            total_penalty = penalty_summary_df['total_penalty'].iloc[0] if not penalty_summary_df.empty else 0
-            
-            of_value = round(total_revenue - total_opex - total_capex - total_penalty)
-
-            return of_value
+        return of_value
     
     def load_stations(self, df):
         """

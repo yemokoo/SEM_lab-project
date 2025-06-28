@@ -338,6 +338,10 @@ class Truck:
                                not destination_reached_flag and \
                                not stopped_low_battery_flag and \
                                (self.status == 'stopped')
+        
+        last_datetime_str = self.path_df['DATETIME'].iloc[-1]
+        dt_obj = pd.to_datetime(last_datetime_str, format='%H:%M:%S', errors='coerce')
+        reaching_time_as_minutes = dt_obj.hour * 60 + dt_obj.minute if pd.notnull(dt_obj) else np.nan
 
         info_df = pd.DataFrame([{
             'truck_id': self.unique_id,
@@ -347,6 +351,9 @@ class Truck:
             'stopped_due_to_simulation_end': stopped_sim_end_flag, 
             'total_distance_planned': total_distance_planned_km,
             'traveled_distance_at_last_stop85': traveled_distance_at_last_stop85_km,
+            'starting_time': self.path_df['START_TIME_MINUTES'].iloc[0],
+            'reaching_time': reaching_time_as_minutes,
+            'actual_reached_time': self.model.current_time if hasattr(self.model, 'current_time') else None,
             'final_path_index': self.current_path_index,
             'final_status': self.status
         }])
