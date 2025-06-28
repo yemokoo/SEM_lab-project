@@ -48,11 +48,13 @@ MUTATION_GENES_MULTIPLE = 20  # 중복된 해에 들어간 유전자 정보의 �
 NUM_CANDIDATES = 500 # 충전소 위치 후보지 개수
 CONVERGENCE_CHECK_START_GENERATIONS = 1000  # 수렴 체크 시작 세대(기본 1000)
 MAX_NO_IMPROVEMENT = 10  # 개선 없는 최대 세대 수
-INITIAL_CHARGERS = 5000 # 설치할 충전기의 대수 충전기 
-TOTAL_CHARGERS = 10000 # 총 충전기 대수
-PARENTS_SIZE = round(POPULATION_SIZE/2) # 부모의 수
 ELECTRIFICATION_RATE = 1.0 # 전동화율 가정(원본이 10%임)
 TRUCK_NUMBERS = int(5946 * ELECTRIFICATION_RATE) # 전체 화물차 대수 / 5946대는 10%의 전동화율 기준 대수
+INITIAL_CHARGERS = TRUCK_NUMBERS # 설치할 충전기의 대수 충전기 
+TOTAL_CHARGERS = 10000 # 총 충전기 대수
+PARENTS_SIZE = round(POPULATION_SIZE/2) # 부모의 수
+
+
 
 # 저장 세대 간격
 SAVE_INTERVAL = 100
@@ -998,8 +1000,6 @@ if __name__ == '__main__':
     except Exception as e_other:
         # 기타 예외 처리
         print(f"멀티프로세싱 시작 방식 설정 중 예기치 않은 오류 발생: {e_other}")
-    final_result_path, data_folders = genetic_algorithm()
+        
+    genetic_algorithm()
 
-    # 모든 실행이 끝난 후, 파일 병합 함수 호출
-    if final_result_path:
-         _merge_periodic_csv_files(final_result_path, data_folders)
