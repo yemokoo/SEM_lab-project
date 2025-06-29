@@ -344,7 +344,7 @@ class Simulator:
             if all(col in successful_trucks_df.columns for col in required_cols):
                 # 운행 거리(km)에 비례한 충전 마진(분)을 계산합니다.
                 # (100km당 36분의 충전 시간을 기준으로 함)
-                charging_margin = (successful_trucks_df['total_distance_planned'] / 100.0) * 36.0
+                charging_margin = (successful_trucks_df['total_distance_planned'] / 100.0) * 54.0
                 
                 # 마진을 포함한 허용 도착 시간과 실제 도착 시간의 차이를 통해 지연 시간(분)을 계산합니다.
                 allowed_arrival_time = successful_trucks_df['reaching_time'] + charging_margin
