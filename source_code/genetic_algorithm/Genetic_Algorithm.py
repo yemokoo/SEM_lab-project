@@ -321,19 +321,26 @@ def crossover_elitsm(selected_parents, num_genes, pop_size, generation):
     return crossover[:pop_size]
     
 def get_random_charger(max, adaptive_constant):    
-            
-            mutated_charger_number = [
-                (0, 0, 0.2+round((abs(GENERATIONS-adaptive_constant)/GENERATIONS), 4)*0.3),  # 20% + 세대 수에 따른 가변 확률(최대 30%)
-                (1, max, 0.8-round((abs(GENERATIONS-adaptive_constant)/GENERATIONS), 4)*0.3)  # 80% - 세대 수에 따른 가변 확률(최대 30%)
-                #총 세대 - 현재 세대 (adaptive constant -> 현재 세대 카운트트)
-                 
-            ]
-            rand_val = random.random()
-            cumulative_prob = 0
-            for lower, upper, prob in mutated_charger_number:
-                cumulative_prob += prob
-                if rand_val <= cumulative_prob:
-                    return random.randint(lower, upper)
+    # 기본 확률 계산
+    base_prob_0 = 0.5 - round((abs(GENERATIONS-adaptive_constant)/GENERATIONS), 4) * 0.3  # 20% ~ 50%   뒤로 갈수록 0 나올 확률 증가
+    base_prob_1_max = 0.5 + round((abs(GENERATIONS-adaptive_constant)/GENERATIONS), 4) * 0.3  # 80% ~ 50% 초반 다양한 해 탐색, 후반 안정성
+    
+    prob_ratio_for_new_range = 0.1  # 10%를 새로운 범위에 할당
+    prob_new_range = base_prob_1_max * prob_ratio_for_new_range  # 8% ~ 5%
+    prob_1_max_adjusted = base_prob_1_max * (1 - prob_ratio_for_new_range)  # 72% ~ 45%
+    
+    mutated_charger_number = [
+        (0, 0, base_prob_0),                    # 20% ~ 50%
+        (1, max, prob_1_max_adjusted),          # 72% ~ 45%
+        (max + 1, 2 * max, prob_new_range)     # 8% ~ 5%
+    ]
+    
+    rand_val = random.random()
+    cumulative_prob = 0
+    for lower, upper, prob in mutated_charger_number:
+        cumulative_prob += prob
+        if rand_val <= cumulative_prob:
+            return random.randint(lower, upper)
                 
 
 def mutation(crossovered, pop_size, mutation_rate, num_candi, initial_chargers, adaptive_constant):
@@ -366,7 +373,7 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, initial_chargers, 
     # num_genes_to_change 초기화 
     num_genes_to_change = 0
 
-    # 3. 중복 개체 처리
+    # 3. 중복 개체가 있는 경우
     for ind, indices in duplicates.items():
         num_duplicates = len(indices) - 1  # 자신(원본)을 제외한 중복 개체 수
 
