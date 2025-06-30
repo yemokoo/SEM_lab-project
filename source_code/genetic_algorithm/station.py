@@ -94,19 +94,17 @@ class Station:
                 if current_time >= self.waiting_trucks_queue[0][0].next_activation_time:
                     truck_tuple = self.waiting_trucks_queue.pop(0)  # 대기열에서 첫 번째 (트럭, 진입시간) 튜플을 꺼냄
                     truck_to_charge = truck_tuple[0]
-                    queue_entry_time = truck_tuple[1]
 
-
-                    truck_ready_time = max(queue_entry_time, truck_to_charge.next_activation_time)
+                    truck_ready_time = truck_to_charge.next_activation_time
                     charger_free_time = charger.last_charge_finish_time
                     effective_wait_start_time = 0
 
                     if (current_time - charger_free_time) > self.unit_minutes:
-                        effective_wait_start_time = truck_ready_time
+                        effective_wait_start_time = charger_free_time
                     else:
-                        effective_wait_start_time = max(truck_ready_time, charger_free_time)
+                        effective_wait_start_time = current_time
 
-                    actual_wait_time = current_time - effective_wait_start_time
+                    actual_wait_time = max(effective_wait_start_time - truck_ready_time, 0)  # 실제 대기 시간 계산
                     
                     if actual_wait_time < 0:
                         actual_wait_time = 0
