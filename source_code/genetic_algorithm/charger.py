@@ -33,6 +33,7 @@ class Charger:
         self.current_truck = None  # 현재 충전 중인 트럭 객체
         self.total_charged_energy = 0.0  # 이 충전기가 충전한 총 에너지 (kWh)
         self.charging_events_count = 0   # 이 충전기가 처리한 총 충전 이벤트 수
+        self.last_charge_finish_time = 0.0 # 마지막 충전 종료 시간 
         
     def start_charging(self, truck, current_time):
         """
@@ -68,6 +69,9 @@ class Charger:
         """
         truck = self.current_truck  # 현재 충전 중인 트럭 객체 가져오기
         if truck:  # 트럭 객체가 존재하는 경우
+            if truck.charge_end_time is not None:
+                self.last_charge_finish_time = truck.charge_end_time
+                
             remaining_energy = ((100 - truck.SOC) / 100) * truck.BATTERY_CAPACITY  # 남은 에너지 계산 (kWh) - SOC 업데이트를 위해
             truck.update_soc(remaining_energy)  # 트럭의 SOC 업데이트 (완전히 충전된 상태로 설정)
             truck.is_charging = False  # 충전 중 상태 해제

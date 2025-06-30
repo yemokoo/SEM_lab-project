@@ -29,7 +29,7 @@ class Simulator:
     """
     시뮬레이션 클래스 (최적화 및 로직 개선)
     """
-    def __init__(self, car_paths_df, station_df, unit_minutes, simulating_hours, number_of_trucks, number_of_max_chargers):
+    def __init__(self, car_paths_df, station_df, unit_minutes, simulating_hours, number_of_trucks, number_of_max_chargers, truck_step_frequency):
         """
         시뮬레이터 객체를 초기화합니다.
         입력 데이터는 유효하다고 가정합니다.
@@ -40,6 +40,7 @@ class Simulator:
         self.unit_minutes = unit_minutes
         self.simulating_hours = simulating_hours
         self.number_of_trucks = number_of_trucks # 초기 목표 트럭 수
+        self.truck_step_frequency = truck_step_frequency # 트럭 행동 결정 빈도 (스텝 단위)
 
         self.stations = []
         self.link_id_to_station = {}
@@ -111,22 +112,23 @@ class Simulator:
 
             # 3. 트럭 행동 결정 및 상태 업데이트
             # 리스트 복사본 사용 (반복 중 제거 대비)
-            current_trucks_in_step = list(self.trucks) # 매 스텝마다 현재 트럭 리스트의 복사본 생성
-            
-            active_truck_count_this_step = 0
-            
-            for truck in current_trucks_in_step:
-                # current_trucks_in_step로 순회 중 self.trucks에서 제거되었을 수 있으므로,
-                # 실제 self.trucks에 아직 존재하는지, 그리고 상태가 stopped가 아닌지 확인
-                if truck in self.trucks and truck.status != 'stopped':
-                    if self.current_time >= truck.next_activation_time:
-                        active_truck_count_this_step += 1
-                        try:
-                            truck.step(self.current_time)
-                        except Exception as e:
-                            print(f"ERROR: Truck {truck.unique_id} step failed at time {self.current_time}: {e}")
-                            # 오류 발생 시 해당 트럭을 강제 종료하거나 다른 오류 처리 로직 추가 가능
-                            # truck.stop() # 예: 오류 발생 시 강제 종료
+            if step_num % self.truck_step_frequency == 0:
+                current_trucks_in_step = list(self.trucks) # 매 스텝마다 현재 트럭 리스트의 복사본 생성
+                
+                active_truck_count_this_step = 0
+                
+                for truck in current_trucks_in_step:
+                    # current_trucks_in_step로 순회 중 self.trucks에서 제거되었을 수 있으므로,
+                    # 실제 self.trucks에 아직 존재하는지, 그리고 상태가 stopped가 아닌지 확인
+                    if truck in self.trucks and truck.status != 'stopped':
+                        if self.current_time >= truck.next_activation_time:
+                            active_truck_count_this_step += 1
+                            try:
+                                truck.step(self.current_time)
+                            except Exception as e:
+                                print(f"ERROR: Truck {truck.unique_id} step failed at time {self.current_time}: {e}")
+                                # 오류 발생 시 해당 트럭을 강제 종료하거나 다른 오류 처리 로직 추가 가능
+                                # truck.stop() # 예: 오류 발생 시 강제 종료
 
             # 시간 증가
             self.current_time += self.unit_minutes
@@ -619,7 +621,8 @@ class Simulator:
                 station_id=idx, 
                 link_id=int(row['link_id']), 
                 num_of_chargers=int(row['num_of_charger']), 
-                charger_specs=[{'power': 200, 'rate': 560}] * int(row['num_of_charger']) 
+                charger_specs=[{'power': 200, 'rate': 560}] * int(row['num_of_charger']),
+                unit_minutes=self.unit_minutes 
             )
             for idx, row in df.iterrows() 
         ]
@@ -628,13 +631,13 @@ class Simulator:
 
 # --- 전역 함수 ---
 
-def run_simulation(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers):
+def run_simulation(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers, truck_step_freqency):
     """
     시뮬레이션을 준비, 실행하고 최종 OF 값을 반환합니다. 실행 시간도 측정합니다.
     """
     overall_start_time = time.time()
     print("\n=== 시뮬레이션 시작 ===") 
-    sim = Simulator(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers)
+    sim = Simulator(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers, truck_step_freqency)
     
     prepare_start = time.time()
     sim.prepare_simulation()
@@ -792,7 +795,8 @@ if __name__ == '__main__':
     station_file_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
 
     simulating_hours = 36
-    unit_time = 20 
+    unit_time = 5 
+    truck_step_frequency = 3
     number_of_trucks = 5946
     number_of_max_chargers = 2000 
 
@@ -806,6 +810,6 @@ if __name__ == '__main__':
     # 데이터 로딩 성공 여부 확인 (데이터가 비어있지 않은지)
     if car_paths_df is not None and not car_paths_df.empty and station_df is not None and not station_df.empty:
         gc.collect() 
-        run_simulation(car_paths_df, station_df, unit_time, simulating_hours, number_of_trucks, number_of_max_chargers)
+        run_simulation(car_paths_df, station_df, unit_time, simulating_hours, number_of_trucks, number_of_max_chargers, truck_step_frequency)
     else:
         print("\n--- 데이터 로딩 실패 또는 유효한 데이터 없음으로 시뮬레이션 중단 ---") 

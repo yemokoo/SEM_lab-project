@@ -15,7 +15,7 @@ class Station:
         queue_history (list): 매 시간 단계별 대기열 길이 기록
         waiting_times (list): 각 트럭의 실제 대기 시간(분) 기록
     """
-    def __init__(self, station_id, link_id, num_of_chargers, charger_specs):
+    def __init__(self, station_id, link_id, num_of_chargers, charger_specs, unit_minutes):
         """
         충전소 객체를 초기화합니다.
 
@@ -29,6 +29,7 @@ class Station:
         self.link_id = int(link_id)  # 링크 ID를 정수형으로 변환
         self.num_of_chargers = num_of_chargers
         self.chargers = []  # 충전기 객체를 저장할 리스트 초기화
+        self.unit_minutes = unit_minutes # 시뮬레이션 단위 시간 (분 단위)
         
         # 각 충전소 내에서 고유한 charger_id를 부여하기 위한 카운터
         # Simulator 전체에서 고유 ID를 보장하려면 station_id와 조합하는 것이 좋음
@@ -95,10 +96,21 @@ class Station:
                     truck_to_charge = truck_tuple[0]
                     queue_entry_time = truck_tuple[1]
 
-                    # 실제 대기 시간 계산 및 기록
-                    actual_wait_time = current_time - queue_entry_time
-                    if actual_wait_time < 0: # 혹시 모를 오류 방지 (current_time이 entry_time보다 작을 수 없음)
-                        actual_wait_time = 0 
+
+                    truck_ready_time = max(queue_entry_time, truck_to_charge.next_activation_time)
+                    charger_free_time = charger.last_charge_finish_time
+                    effective_wait_start_time = 0
+
+                    if (current_time - charger_free_time) > self.unit_minutes:
+                        effective_wait_start_time = truck_ready_time
+                    else:
+                        effective_wait_start_time = max(truck_ready_time, charger_free_time)
+
+                    actual_wait_time = current_time - effective_wait_start_time
+                    
+                    if actual_wait_time < 0:
+                        actual_wait_time = 0
+                        
                     self.waiting_times.append(actual_wait_time)
                     
                     # print(f"시간 {current_time:.2f}: 트럭 {truck_to_charge.unique_id}이(가) 충전소 {self.station_id}의 충전기 {charger.charger_id}에 할당됨. 대기 시간: {actual_wait_time:.2f}분.")

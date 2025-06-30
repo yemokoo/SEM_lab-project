@@ -413,7 +413,8 @@ class Simulator:
                 station_id=idx, 
                 link_id=int(row['link_id']), 
                 num_of_chargers=int(row['num_of_charger']), 
-                charger_specs=[{'power': 200, 'rate': 560}] * int(row['num_of_charger']) 
+                charger_specs=[{'power': 200, 'rate': 560}] * int(row['num_of_charger']), 
+                unit_minutes=self.unit_minutes
             )
             for idx, row in df.iterrows() 
         ]
@@ -554,17 +555,16 @@ if __name__ == '__main__':
     station_file_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
 
     simulating_hours = 36
-    unit_time = 20 
+    unit_time = 5 
+    truck_step_frequency = 3
     number_of_trucks = 5946
     number_of_max_chargers = 2000 
 
-    data_load_start = time.time()
     car_paths_df = load_car_path_df(car_paths_folder, number_of_trucks, estimated_areas=33)
     station_df = load_station_df(station_file_path)
-    data_load_end = time.time()
 
     # 데이터 로딩 성공 여부 확인 (데이터가 비어있지 않은지)
     if car_paths_df is not None and not car_paths_df.empty and station_df is not None and not station_df.empty:
         gc.collect() 
-        run_simulation(car_paths_df, station_df, unit_time, simulating_hours, number_of_trucks, number_of_max_chargers)
+        run_simulation(car_paths_df, station_df, unit_time, simulating_hours, number_of_trucks, number_of_max_chargers, truck_step_frequency)
 
