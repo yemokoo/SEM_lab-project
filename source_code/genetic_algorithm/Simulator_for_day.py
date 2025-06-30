@@ -29,7 +29,7 @@ class Simulator:
     """
     시뮬레이션 클래스 (최적화 및 로직 개선)
     """
-    def __init__(self, car_paths_df, station_df, unit_minutes, simulating_hours, number_of_trucks, number_of_max_chargers):
+    def __init__(self, car_paths_df, station_df, unit_minutes, simulating_hours, number_of_trucks, number_of_max_chargers, truck_step_frequency):
         """
         시뮬레이터 객체를 초기화합니다.
         입력 데이터는 유효하다고 가정합니다.
@@ -40,6 +40,7 @@ class Simulator:
         self.unit_minutes = unit_minutes
         self.simulating_hours = simulating_hours
         self.number_of_trucks = number_of_trucks # 초기 목표 트럭 수
+        self.truck_step_frequency = truck_step_frequency # 트럭 행동 결정 빈도 (스텝 단위)
 
         self.stations = []
         self.link_id_to_station = {}
@@ -146,7 +147,6 @@ class Simulator:
         """
         시뮬레이션 결과를 분석하고 최종 OF 값을 계산합니다.
         """
-        analysis_start_time = time.time()
 
         # 각 충전소의 운영 결과를 집계하여 station_results_df를 생성합니다.
         station_data = [
@@ -179,8 +179,6 @@ class Simulator:
 
         of = self.calculate_of()
 
-        analysis_end_time = time.time()
-        print(f"--- 결과 분석 완료 ({analysis_end_time - analysis_start_time:.2f}초 소요) ---")
         return of
 
 
@@ -333,7 +331,7 @@ class Simulator:
         
         # 분리된 성공/실패 트럭 데이터를 기반으로 페널티를 계산합니다.
         penalty_summary_df, station_penalty_df = self.calculate_penalty(
-            self.successful_trucks_df, self.failed_trucks_df, self.station_results_df
+        self.failed_trucks_df, self.station_results_df
         )
 
         # 재무 및 페널티 관련 데이터프레임을 하나로 병합합니다.
@@ -383,12 +381,11 @@ class Simulator:
 
 # --- 전역 함수 ---
 
-def run_simulation(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers):
+def run_simulation(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers, truck_step_freqency):
     """
     시뮬레이션을 준비, 실행하고 최종 OF 값을 반환합니다. 실행 시간도 측정합니다.
     """
-
-    sim = Simulator(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers)
+    sim = Simulator(car_paths_df, station_df, unit_minutes, simulating_hours, num_trucks, num_chargers, truck_step_freqency)
     
     sim.prepare_simulation()
 

@@ -376,7 +376,7 @@ class Simulator:
         opex_df = self.calculate_OPEX(self.station_results_df)
         capex_df = self.calculate_CAPEX(self.station_results_df)
         penalty_summary_df, station_penalty_df = self.calculate_penalty(
-            self.successful_trucks_df, self.failed_trucks_df, self.station_results_df
+            self.failed_trucks_df, self.station_results_df
         )
 
         merged_df = pd.merge(revenue_df, opex_df, on='station_id', how='outer')
@@ -398,7 +398,6 @@ class Simulator:
 
         truck_p = penalty_summary_df['truck_penalty'].iloc[0] if not penalty_summary_df.empty else 0
         failed_truck_p = penalty_summary_df['failed_truck_penalty'].iloc[0] if not penalty_summary_df.empty else 0
-        late_truck_p = penalty_summary_df['late_truck_penalty'].iloc[0] if not penalty_summary_df.empty else 0
         charger_p = penalty_summary_df['charger_penalty'].iloc[0] if not penalty_summary_df.empty else 0
         waiting_p = penalty_summary_df['waiting_penalty'].iloc[0] if not penalty_summary_df.empty else 0
         
@@ -409,8 +408,7 @@ class Simulator:
         print(f"Total CAPEX                  : {total_capex:,.0f}")
         print(f"Total Penalty                : {total_penalty:,.0f}")
         print(f"  ├─ Truck Penalty (Total)  : {truck_p:,.0f}")
-        print(f"  │  ├─ Failed Truck Penalty : {failed_truck_p:,.0f}")
-        print(f"  │  └─ Late Truck Penalty   : {late_truck_p:,.0f}")
+        print(f"  │  └─ Failed Truck Penalty : {failed_truck_p:,.0f}")
         print(f"  ├─ Charger Penalty          : {charger_p:,.0f}")
         print(f"  └─ Waiting Penalty          : {waiting_p:,.0f}")
         print(f"------------------------------------")

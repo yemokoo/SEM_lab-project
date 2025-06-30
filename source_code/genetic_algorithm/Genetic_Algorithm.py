@@ -80,6 +80,7 @@ def evaluate_individual_shared(args):
 
     unit_minutes = 20   
     simulating_hours = 36  
+    truck_step_freqency = 3  # 트럭의 시간 단계 주기 
     num_trucks = TRUCK_NUMBERS # GA.py의 전역변수
     
     #try:
@@ -95,7 +96,8 @@ def evaluate_individual_shared(args):
         unit_minutes,
         simulating_hours,
         num_trucks,
-        TOTAL_CHARGERS # GA.py의 전역변수
+        TOTAL_CHARGERS, # GA.py의 전역변수
+        truck_step_freqency
     )
 
     # 사용한 DataFrame 명시적 삭제
