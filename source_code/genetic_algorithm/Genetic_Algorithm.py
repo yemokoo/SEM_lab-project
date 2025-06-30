@@ -422,8 +422,9 @@ def mutation(crossovered, pop_size, mutation_rate, num_candi, initial_chargers, 
 
     # 5. 수정된 개체들을 다시 crossovered로 변환
     crossovered = df[list(range(num_candi))].to_numpy() # id 제외
-    print(f"num_genes_to_change: {num_genes_to_change}, adaptive probablity: {(round((abs(GENERATIONS-adaptive_constant)/GENERATIONS)*0.9+0.1, 4)*100):.2f}%")
-    print(f"돌연변이에서 0이 나올 확률 : {(0.2+round((abs(GENERATIONS-adaptive_constant)/GENERATIONS), 4)*0.3)*100:.4f}%")
+    print("변수확인", adaptive_constant, GENERATIONS)
+    print(f"num_genes_to_change: {num_genes_to_change}, adaptive probablity: {(0.5 + round((abs(GENERATIONS-adaptive_constant)/GENERATIONS), 4) * 0.3 * 100):.2f}%")
+    print(f"돌연변이에서 0이 나올 확률 : {(0.5 - round((abs(GENERATIONS-adaptive_constant)/GENERATIONS), 4) * 0.3)*100:.4f}%")
 
     del df # df 명시적으로 삭제
 
