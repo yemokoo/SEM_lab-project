@@ -46,7 +46,7 @@ TOURNAMENT_SIZE = 4 # 토너먼트 크기
 MUTATION_RATE = 0.015  # 변이 확률(기본 0.015)
 MUTATION_GENES_MULTIPLE = 20  # 중복된 해에 들어간 유전자 정보의 변이 배수
 NUM_CANDIDATES = 500 # 충전소 위치 후보지 개수
-CONVERGENCE_CHECK_START_GENERATIONS = 1000  # 수렴 체크 시작 세대(기본 1000)
+CONVERGENCE_CHECK_START_GENERATIONS = 800  # 수렴 체크 시작 세대
 MAX_NO_IMPROVEMENT = 10  # 개선 없는 최대 세대 수
 ELECTRIFICATION_RATE = 1.0 # 전동화율 가정(원본이 10%임)
 TRUCK_NUMBERS = int(5946 * ELECTRIFICATION_RATE) # 전체 화물차 대수 / 5946대는 10%의 전동화율 기준 대수
@@ -445,6 +445,7 @@ def genetic_algorithm():
     immigration_count = 0
     MAX_IMMIGRATIONS = 5
     convergence_count = 0
+    last_immigration_generation = -50 # 마지막 이민자 연산 로직 추적
 
     convergence_df = pd.DataFrame({
         'Generation': pd.Series(dtype='int'),
@@ -629,7 +630,8 @@ def genetic_algorithm():
                     print(f"개선 여부 판단 유보 (세대 {generation+1}/{CONVERGENCE_CHECK_START_GENERATIONS})")
 
 
-                if no_improvement_count >= MAX_NO_IMPROVEMENT:  # 연속 MAX_NO_IMPROVEMENT 세대 동안 개선 없으면 종료
+                if no_improvement_count >= MAX_NO_IMPROVEMENT and immigration_count >= MAX_IMMIGRATIONS:
+                    # 연속 MAX_NO_IMPROVEMENT 세대 동안 개선이 없으며 이민자 연산을 전부 수행하면 전체 종료
                     print(f"최적해 변화가 {MAX_NO_IMPROVEMENT} 세대 연속 없어 알고리즘을 종료합니다.")
                     convergence_df = pd.concat([convergence_df, pd.DataFrame({
                         'Generation': [generation + 1],
@@ -671,10 +673,11 @@ def genetic_algorithm():
             print('부모 선택 완료')
             best_fitness_number_of_charger.append(np.sum(parents[0]))
 
-            if no_improvement_count >= 5 and immigration_count <= MAX_IMMIGRATIONS:
+            if (no_improvement_count >= 5 and immigration_count <= MAX_IMMIGRATIONS and (generation - last_immigration_generation) >= 50):
                 parents = immigration(parents, NUM_CANDIDATES, INITIAL_CHARGERS, generation)
                 immigration_count += 1
                 no_improvement_count = 0
+                last_immigration_generation = generation
                 print(f"이민자 연산 실행 ({immigration_count}/{MAX_IMMIGRATIONS})")  
                 print("수렴 카운트 초기화")
 
