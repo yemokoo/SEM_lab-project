@@ -207,6 +207,10 @@ class Simulator:
              'avg_queue_length': np.mean(station.queue_history) if station.queue_history else 0,
              'max_queue_length': np.max(station.queue_history) if station.queue_history else 0,
              'avg_waiting_time_min': np.mean(station.waiting_times) if station.waiting_times else 0,
+             'queue_history_raw': station.queue_history,
+             'charging_history_raw': station.charging_history, # 충전기별 충전 상태 기록 추가
+             'cumulative_arrivals_history': station.cumulative_arrivals_history,
+             'cumulative_departures_history': station.cumulative_departures_history,
             }
             for station in self.stations
         ]
@@ -561,7 +565,112 @@ class Simulator:
             fig.tight_layout()
             plt.savefig(os.path.join(timestamped_folder_path, "station_chargers_vs_wait_time_scatter.png"), dpi=300)
             plt.close(fig)
+
+        # --- 개별 충전소 대기열/점유율 그래프 생성 ---
+        if 'queue_history_raw' in self.station_results_df.columns and 'charging_history_raw' in self.station_results_df.columns:
+            # 1. 그래프 저장을 위한 전용 폴더 생성
+            graph_folder = os.path.join(timestamped_folder_path, "station_occupancy_graphs")
+            os.makedirs(graph_folder, exist_ok=True)
+            print(f"충전소별 점유/대기열 그래프가 다음 경로에 저장됩니다: {graph_folder}")
             
+            # 2. 활동이 있었던 충전소만 필터링 (대기 또는 충전이 한 번이라도 발생)
+            stations_with_activity = self.station_results_df[
+                self.station_results_df.apply(lambda row: (len(row['queue_history_raw']) > 0 and pd.Series(row['queue_history_raw']).max() > 0) or \
+                                                         (len(row['charging_history_raw']) > 0 and pd.Series(row['charging_history_raw']).max() > 0), axis=1)
+            ]
+            
+            # 3. 각 충전소별로 그래프 생성 루프
+            for index, row in stations_with_activity.iterrows():
+                station_id = int(row['station_id'])
+                queue_history = row['queue_history_raw']
+                charging_history = row['charging_history_raw']
+                num_chargers = int(row['num_of_charger'])
+                
+                fig, ax = plt.subplots(figsize=(15, 7))
+                time_steps = np.arange(len(queue_history)) * self.unit_minutes
+
+                # 📊 그래프 그리기
+                # (1) 충전 중인 트럭 수를 막대 그래프로 표시
+                ax.bar(time_steps, charging_history, width=self.unit_minutes, color='skyblue', alpha=0.8, label=f'Charging Trucks')
+                
+                # (2) 대기 중인 트럭 수를 꺾은선 그래프로 표시
+                ax.plot(time_steps, queue_history, marker='o', color='orangered', linestyle='-', markersize=4, label='Queued Trucks')
+
+                # (3) 전체 충전기 용량을 나타내는 점선 추가
+                ax.axhline(y=num_chargers, color='dodgerblue', linestyle='--', linewidth=1.5, label=f'Capacity ({num_chargers} Chargers)')
+                
+                # 🖼️ 그래프 디자인
+                ax.set_title(f'Station {station_id}: Occupancy & Queue History', fontsize=16, weight='bold')
+                ax.set_xlabel('Simulation Time (minutes)', fontsize=12)
+                ax.set_ylabel('Number of Trucks', fontsize=12)
+                ax.grid(True, which='major', axis='y', linestyle='--', linewidth=0.5)
+                ax.legend(loc='upper left')
+                
+                # 축 설정
+                ax.set_ylim(bottom=0)
+                ax.set_xlim(left=0)
+                ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True)) # Y축 눈금을 정수로
+                
+                # 💾 파일 저장
+                file_name = f"station_{station_id}_occupancy_queue.png"
+                save_path = os.path.join(graph_folder, file_name)
+                
+                plt.tight_layout()
+                plt.savefig(save_path, dpi=150)
+                plt.close(fig) # 메모리 해제를 위해 그래프 닫기
+
+            print(f"{len(stations_with_activity)}개 충전소의 점유/대기열 추이 그래프 저장 완료.")
+              
+        if 'cumulative_arrivals_history' in self.station_results_df.columns:
+            # 1. 그래프 저장을 위한 전용 폴더 생성
+            graph_folder = os.path.join(timestamped_folder_path, "cumulative_queue_graphs")
+            os.makedirs(graph_folder, exist_ok=True)
+            print(f"누적 대기열 다이어그램이 다음 경로에 저장됩니다: {graph_folder}")
+
+            stations_with_activity = self.station_results_df[
+                self.station_results_df['cumulative_arrivals_history'].apply(lambda x: len(x) > 1 and pd.Series(x).max() > 0)
+            ]
+            
+            for index, row in stations_with_activity.iterrows():
+                station_id = int(row['station_id'])
+                arrivals = row['cumulative_arrivals_history']
+                num_chargers = int(row['num_of_charger'])
+                departures = row['cumulative_departures_history']
+                
+                fig, ax = plt.subplots(figsize=(15, 7))
+                time_steps = np.arange(len(arrivals)) * self.unit_minutes
+
+                # 📊 그래프 그리기
+                # (1) 누적 도착 곡선 (계단식으로 표현)
+                ax.plot(time_steps, arrivals, drawstyle='steps-post', color='blue', label='Cumulative Arrivals')
+                
+                # (2) 누적 출발 곡선 (계단식으로 표현)
+                ax.plot(time_steps, departures, drawstyle='steps-post', color='green', label='Cumulative Departures (Charging Start)')
+
+                # (3) 대기열 영역을 반투명하게 채우기
+                ax.fill_between(time_steps, arrivals, departures, step='post', color='gray', alpha=0.3, label='waiting time')
+                
+                # 🖼️ 그래프 디자인
+                ax.set_title(f'Cumulative Queuing Diagram for Station {station_id}', fontsize=16, weight='bold')
+                ax.set_xlabel('Simulation Time (minutes)', fontsize=12)
+                ax.set_ylabel('Cumulative Number of Trucks', fontsize=12)
+                ax.grid(True, which='major', linestyle='--', linewidth=0.5)
+                ax.legend(loc='upper left')
+                
+                # 축 설정
+                ax.set_ylim(bottom=0)
+                ax.set_xlim(left=0, right=time_steps[-1])
+                
+                # 💾 파일 저장
+                file_name = f"station_{station_id}_cumulative_diagram.png"
+                save_path = os.path.join(graph_folder, file_name)
+                
+                plt.tight_layout()
+                plt.savefig(save_path, dpi=150)
+                plt.close(fig) # 메모리 해제
+
+            print(f"{len(stations_with_activity)}개 충전소의 누적 대기열 다이어그램 저장 완료.")
+                
             print(f"운영 관련 그래프 저장 완료.")
 
         return of_value

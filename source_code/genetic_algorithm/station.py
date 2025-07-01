@@ -50,7 +50,14 @@ class Station:
 
         # 통계 수집을 위한 변수 초기화
         self.queue_history = []  # 매 시간 단계(또는 특정 이벤트 발생 시)의 대기열 길이를 저장
+        self.charging_history = []
         self.waiting_times = []  # 충전을 시작한 각 트럭의 대기 시간을 저장 (분 단위)
+        self.total_arrivals = 0  # 충전소에 도착한 총 트럭 수
+        self.total_departures = 0  # 대기열에서 나와 충전을 시작한 총 트럭 수
+        
+        # history 기록용 리스트 (그래프의 Y축 데이터)
+        self.cumulative_arrivals_history = [0]
+        self.cumulative_departures_history = [0]
 
     def add_truck_to_queue(self, truck, current_time): # current_time 인자 추가
         """
@@ -66,7 +73,7 @@ class Station:
         if truck not in [t[0] for t in self.waiting_trucks_queue]:
             self.waiting_trucks_queue.append((truck, current_time))  # 트럭 객체와 대기열 진입 시간(current_time)을 튜플로 저장
             truck.waiting = True  # 트럭의 waiting 속성을 True로 설정 (대기 중)
-
+            self.total_arrivals += 1  
             # 대기열 정렬: 트럭의 다음 활성화 시간(도착/요청 시간으로 간주), 동일 시간일 경우 트럭 고유 ID 순
             # x[0]은 튜플의 첫 번째 요소인 truck 객체를 의미
             self.waiting_trucks_queue.sort(key=lambda x: (x[0].next_activation_time, x[0].unique_id))
@@ -112,7 +119,7 @@ class Station:
                     self.waiting_times.append(actual_wait_time)
                     
                     # print(f"시간 {current_time:.2f}: 트럭 {truck_to_charge.unique_id}이(가) 충전소 {self.station_id}의 충전기 {charger.charger_id}에 할당됨. 대기 시간: {actual_wait_time:.2f}분.")
-                    
+                    self.total_departures += 1
                     charger.start_charging(truck_to_charge, current_time)  # 충전 시작
                     # truck_to_charge.status='charging' # Truck의 상태는 Truck.step 또는 Charger.start_charging에서 관리하는 것이 좋음
                                                       # 여기서는 Charger가 트럭의 is_charging, waiting 등을 업데이트한다고 가정
@@ -143,10 +150,21 @@ class Station:
                 charger.finish_charging()  # 충전 종료 처리 (Charger 내부에서 트럭 상태 변경 및 에너지 기록)
                 truck.status = 'driving' # Truck의 상태는 Truck.step에서 관리하는 것이 좋음
 
-        # 매 시뮬레이션 스텝(또는 Station이 업데이트되는 시점)의 대기열 길이를 기록
-        self.queue_history.append(len(self.waiting_trucks_queue))
         # if current_time % 60 == 0 and current_time > 0: # 예: 매 시간마다 로깅 (디버깅용)
             # print(f"시간 {current_time:.2f}: 충전소 {self.station_id} 현재 대기열 길이: {len(self.waiting_trucks_queue)} (기록됨)")
+
+        # 1. 현재 충전 중인 충전기 개수 계산
+        num_currently_charging = sum(1 for charger in self.chargers if charger.current_truck is not None)
+        
+        # 2. 계산된 값을 charging_history에 추가
+        self.charging_history.append(num_currently_charging)
+
+        # 3. 기존 대기열 길이 기록
+        self.queue_history.append(len(self.waiting_trucks_queue))
+
+         # 4. 누적 도착 및 출발 트럭 수 기록
+        self.cumulative_arrivals_history.append(self.total_arrivals)
+        self.cumulative_departures_history.append(self.total_departures)
 
     def finalize_unprocessed_trucks(self, final_time):
         """
