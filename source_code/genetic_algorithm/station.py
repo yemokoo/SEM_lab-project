@@ -148,3 +148,18 @@ class Station:
         # if current_time % 60 == 0 and current_time > 0: # 예: 매 시간마다 로깅 (디버깅용)
             # print(f"시간 {current_time:.2f}: 충전소 {self.station_id} 현재 대기열 길이: {len(self.waiting_trucks_queue)} (기록됨)")
 
+    def finalize_unprocessed_trucks(self, final_time):
+        """
+        시뮬레이션 종료 시, 대기열에 처리되지 않고 남아있는 트럭들의 대기 시간을 계산하여 기록합니다.
+        process_queue와 일관성을 맞추기 위해 튜플을 pop하는 방식으로 처리합니다.
+        """
+        # while 루프를 사용하여 대기열이 빌 때까지 튜플을 하나씩 꺼내 처리
+        while self.waiting_trucks_queue:
+            # 1. 대기열에서 (트럭, 진입시간) 튜플을 꺼냄
+            truck, queue_entry_time = self.waiting_trucks_queue.pop(0)
+
+            # 2. '숨겨진' 대기 시간을 '종료 시각 - 큐 진입 시각'으로 계산
+            wait_time = final_time - queue_entry_time
+            
+            # 3. 계산된 대기 시간을 리스트에 기록
+            self.waiting_times.append(wait_time)

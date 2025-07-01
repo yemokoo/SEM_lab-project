@@ -65,9 +65,10 @@ class Simulator:
         station_link_ids = set(self.link_id_to_station.keys())
 
         # EVCS 컬럼 추가 또는 업데이트
+        operational_station_link_ids = {s.link_id for s in self.stations if s.num_of_chargers > 0}
         if 'EVCS' not in self.car_paths_df.columns:
-             self.car_paths_df['EVCS'] = 0
-        self.car_paths_df['EVCS'] = np.where(self.car_paths_df['LINK_ID'].isin(station_link_ids), 1, 0)
+            self.car_paths_df['EVCS'] = 0
+        self.car_paths_df['EVCS'] = np.where(self.car_paths_df['LINK_ID'].isin(operational_station_link_ids), 1, 0)
 
         # 트럭 객체 생성
         self.trucks = []
@@ -145,6 +146,10 @@ class Simulator:
 
         # --- 최종 정리 단계 ---
         print(f"\n--- 시뮬레이션 최종 정리 시작 ---")
+
+        for station in self.stations:
+            station.finalize_unprocessed_trucks(self.current_time)
+            
         # self.trucks 리스트는 Truck.stop()에 의해 변경되므로 복사본 사용
         final_cleanup_trucks = list(self.trucks)
         cleaned_up_count = 0
@@ -176,7 +181,6 @@ class Simulator:
 
         run_end_time = time.time() # 실제 run_simulation 종료 시간
         print(f"--- 시뮬레이션 전체 로직 종료 ({run_end_time - run_start_time:.2f}초 소요) ---")
-
 
 
     def remove_truck(self, truck):
@@ -753,7 +757,7 @@ if __name__ == '__main__':
     unit_time = 5 
     truck_step_frequency = 3
     number_of_trucks = 5946
-    number_of_max_chargers = 2000 
+    number_of_max_chargers = 10000 
 
     print("--- 데이터 로딩 시작 ---") 
     data_load_start = time.time()

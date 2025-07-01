@@ -64,10 +64,11 @@ class Simulator:
         self.link_id_to_station = {station.link_id: station for station in self.stations}
         station_link_ids = set(self.link_id_to_station.keys())
 
-        # EVCS 컬럼 추가 또는 업데이트
+       # EVCS 컬럼 추가 또는 업데이트
+        operational_station_link_ids = {s.link_id for s in self.stations if s.num_of_chargers > 0}
         if 'EVCS' not in self.car_paths_df.columns:
-             self.car_paths_df['EVCS'] = 0
-        self.car_paths_df['EVCS'] = np.where(self.car_paths_df['LINK_ID'].isin(station_link_ids), 1, 0)
+            self.car_paths_df['EVCS'] = 0
+        self.car_paths_df['EVCS'] = np.where(self.car_paths_df['LINK_ID'].isin(operational_station_link_ids), 1, 0)
 
         # 트럭 객체 생성
         self.trucks = []
@@ -123,6 +124,8 @@ class Simulator:
             self.current_time += self.unit_minutes
 
         # --- 최종 정리 단계 ---
+        for station in self.stations:
+            station.finalize_unprocessed_trucks(self.current_time)
         # self.trucks 리스트는 Truck.stop()에 의해 변경되므로 복사본 사용
         final_cleanup_trucks = list(self.trucks)
         cleaned_up_count = 0
