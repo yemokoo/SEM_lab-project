@@ -338,7 +338,7 @@ class Simulator:
         charger_penalty = 0.0
         number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
         if number_of_total_chargers > self.number_of_max_chargers:
-            charger_cost_per_unit = 80000000
+            charger_cost_per_unit = 96000000
             charger_penalty = float(charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers))
 
         # --- 3. 충전소에서 발생한 총 대기 시간에 대한 페널티 (기회비용) ---
