@@ -610,7 +610,7 @@ def genetic_algorithm():
             curr_10_mean = 0
 
             # 수렴 체크 (새로운 방식)
-            if generation >= 10:  # 11개 세대(index 10) 이상의 데이터가 쌓여야 비교 가능
+            if generation >= 10: # 11개 세대(index 10) 이상의 데이터가 쌓여야 비교 가능
                 # 1. 충전기 개수 변화량 체크
                 prev_best_chargers = np.sum(best_individual_history[-2])  # 이전 세대 최고 개체 충전기 수
                 charger_change = (current_best_chargers - prev_best_chargers) / abs(prev_best_chargers)
@@ -627,7 +627,7 @@ def genetic_algorithm():
 
                 # no_improvement_count 증가/초기화 조건 추가
                 if generation >= CONVERGENCE_CHECK_START_GENERATIONS:
-                    if abs(charger_change) <= 0.01 and abs(fitness_mean_change) <= 0.01:
+                    if abs(charger_change) <= 0.01 and abs(fitness_mean_change) <= 0.005:
                         no_improvement_count += 1
                         print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
                         print(f"{no_improvement_count} 세대 동안 개선 없음")
