@@ -13,7 +13,7 @@ from truck import Truck
 import pyarrow.parquet as pq
 import pyarrow as pa
 
-seed = 42
+seed = time.time_ns() % (2**31 - 1)  # 현재 시간을 기반으로 시드 생성
 random.seed(seed)
 np.random.seed(seed)
 
@@ -276,26 +276,19 @@ class Simulator:
         LIFESPAN_YEARS = 5
         DAYS_PER_YEAR = 365
         daily_divider = LIFESPAN_YEARS * DAYS_PER_YEAR
-        charger_cost_per_unit = 80000000
-        kepco_cost_per_kw = 50000
-        charger_power_kw = 200 
-        construction_cost_multiplier = 1868123 * 50 
+        charger_installation_cost_per_unit = 96000000
 
         for station in self.stations:
             num_chargers = station.num_of_chargers
             if num_chargers == 0:
-                charger_cost, kepco_cost, construction_cost, station_capex = 0, 0, 0, 0
+                charger_cost, station_capex = 0, 0
             else:
-                charger_cost = (charger_cost_per_unit * num_chargers) / daily_divider
-                kepco_cost = (kepco_cost_per_kw * num_chargers * charger_power_kw) / daily_divider
-                construction_cost = (construction_cost_multiplier * num_chargers) / daily_divider
-                station_capex = charger_cost + kepco_cost + construction_cost
+                charger_cost = (charger_installation_cost_per_unit * num_chargers) / daily_divider
+                station_capex = charger_cost
             
             capex_results.append({
                 'station_id': station.station_id, 
                 'charger_cost': charger_cost, 
-                'kepco_cost': kepco_cost, 
-                'construction_cost': construction_cost, 
                 'capex': station_capex
             })
         result_df = pd.DataFrame(capex_results)
