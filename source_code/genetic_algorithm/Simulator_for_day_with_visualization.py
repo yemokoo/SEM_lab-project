@@ -223,12 +223,9 @@ class Simulator:
         else:
             # 실패 트럭: destination_reached가 False이고, 배터리 부족 또는 시뮬레이션 시간 초과로 중단된 경우
             self.failed_trucks_df = self.truck_results_df[
-                (self.truck_results_df['destination_reached'] == False) &
-                (
-                    (self.truck_results_df['stopped_due_to_low_battery'] == True) |
-                    (self.truck_results_df['stopped_due_to_simulation_end'] == True)
-                )
+                (self.truck_results_df['destination_reached'] == False) & (self.truck_results_df['stopped_due_to_low_battery'] == True)             
             ].copy()
+        print(f"  실패 트럭 수: {len(self.failed_trucks_df)}대")
 
         of = self.calculate_of()
 
@@ -338,7 +335,7 @@ class Simulator:
         charger_penalty = 0.0
         number_of_total_chargers = sum(station.num_of_chargers for station in self.stations)
         if number_of_total_chargers > self.number_of_max_chargers:
-            charger_cost_per_unit = 96000000
+            charger_cost_per_unit = 80000000
             charger_penalty = float(charger_cost_per_unit * (number_of_total_chargers - self.number_of_max_chargers))
 
         # --- 3. 충전소에서 발생한 총 대기 시간에 대한 페널티 (기회비용) ---
@@ -856,8 +853,8 @@ if __name__ == '__main__':
     station_file_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
 
     simulating_hours = 36
-    unit_time = 5 
-    truck_step_frequency = 3
+    unit_time = 10 
+    truck_step_frequency = 1
     number_of_trucks = 5946
     number_of_max_chargers = 10000 
 

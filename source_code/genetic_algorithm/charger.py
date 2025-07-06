@@ -81,4 +81,3 @@ class Charger:
             truck.charge_start_time = None  # 트럭 객체의 충전 시작 시간 초기화
             truck.charge_end_time = None  # 트럭 객체의 충전 종료 시간 초기화
             self.current_truck = None  # 충전기의 현재 트럭 정보 초기화
-            truck.status = 'driving'  # 트럭 상태를 'driving'으로 설정
