@@ -236,7 +236,7 @@ def process_csv_files(file_path_pattern, schema, parquet_output_base_dir, holida
             df_combined = df_combined.withColumn("CUMULATIVE_STOPPING_TIME_MINUTES",
                                                  round(sum("STOPPING_TIME").over(window_obu_time_ordered.rowsBetween(Window.unboundedPreceding, Window.currentRow)), 1))
 
-            # --- 3-11. 하루 총 주행 거리 <= 120km 인 OBU 필터링 ---
+            # --- 3-11. 하루 총 주행 거리 <= 90km 인 OBU 필터링 ---
             window_obu_max = Window.partitionBy("OBU_ID")
             df_with_max = df_combined.withColumn("max_cum_length_per_obu", max("CUMULATIVE_LINK_LENGTH_KM").over(window_obu_max))
             df_filtered = df_with_max.filter(col("max_cum_length_per_obu") > 90) \

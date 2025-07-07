@@ -173,11 +173,7 @@ class Simulator:
         else:
             # 실패 트럭: destination_reached가 False이고, 배터리 부족 또는 시뮬레이션 시간 초과로 중단된 경우
             self.failed_trucks_df = self.truck_results_df[
-                (self.truck_results_df['destination_reached'] == False) &
-                (
-                    (self.truck_results_df['stopped_due_to_low_battery'] == True) |
-                    (self.truck_results_df['stopped_due_to_simulation_end'] == True)
-                )
+                (self.truck_results_df['destination_reached'] == False) & (self.truck_results_df['stopped_due_to_low_battery'] == True)             
             ].copy()
 
         of = self.calculate_of()

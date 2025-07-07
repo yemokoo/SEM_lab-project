@@ -329,8 +329,8 @@ if not os.path.exists(parquet_output_base_dir):
 # --- 처리할 연도와 월 지정 ---
 target_year = 2020
 # 예시: 2020년 1월부터 3월까지 처리
-target_months = [1]
-#target_months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] 
+#target_months = [1]
+target_months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] 
 
 for month in target_months:
     process_monthly_data(raw_file_path_base, raw_schema, parquet_output_base_dir, target_year, month)
