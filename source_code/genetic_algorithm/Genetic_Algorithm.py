@@ -78,7 +78,7 @@ def evaluate_individual_shared(args):
 
     individual, index, shm_infos_car_paths = args
 
-    unit_minutes = 20   
+    unit_minutes = 5   
     simulating_hours = 30 # 시뮬레이션 시간 (30시간)  
     truck_step_freqency = 3  # 트럭의 시간 단계 주기 
     num_trucks = TRUCK_NUMBERS # GA.py의 전역변수

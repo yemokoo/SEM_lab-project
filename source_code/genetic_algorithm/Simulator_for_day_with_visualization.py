@@ -853,8 +853,8 @@ if __name__ == '__main__':
     station_file_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
 
     simulating_hours = 36
-    unit_time = 10 
-    truck_step_frequency = 1
+    unit_time = 5 
+    truck_step_frequency = 3
     number_of_trucks = 5946
     number_of_max_chargers = 10000 
 
