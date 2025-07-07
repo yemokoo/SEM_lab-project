@@ -47,9 +47,9 @@ MUTATION_RATE = 0.015  # 변이 확률(기본 0.015)
 MUTATION_GENES_MULTIPLE = 20  # 중복된 해에 들어간 유전자 정보의 변이 배수
 NUM_CANDIDATES = 500 # 충전소 위치 후보지 개수
 CONVERGENCE_CHECK_START_GENERATIONS = 800  # 수렴 체크 시작 세대
-MAX_NO_IMPROVEMENT = 10  # 개선 없는 최대 세대 수
+MAX_NO_IMPROVEMENT = 15  # 개선 없는 최대 세대 수
 ELECTRIFICATION_RATE = 1.0 # 전동화율 가정(원본이 10%임)
-TRUCK_NUMBERS = int(5946 * ELECTRIFICATION_RATE) # 전체 화물차 대수 / 5946대는 10%의 전동화율 기준 대수
+TRUCK_NUMBERS = int(3050 * ELECTRIFICATION_RATE) # 전체 화물차 대수 / 5946대는 10%의 전동화율 기준 대수
 INITIAL_CHARGERS = TRUCK_NUMBERS # 설치할 충전기의 대수 충전기 
 TOTAL_CHARGERS = 10000 # 총 충전기 대수
 PARENTS_SIZE = round(POPULATION_SIZE/2) # 부모의 수
@@ -79,7 +79,7 @@ def evaluate_individual_shared(args):
     individual, index, shm_infos_car_paths = args
 
     unit_minutes = 20   
-    simulating_hours = 36  
+    simulating_hours = 30 # 시뮬레이션 시간 (30시간)  
     truck_step_freqency = 3  # 트럭의 시간 단계 주기 
     num_trucks = TRUCK_NUMBERS # GA.py의 전역변수
     

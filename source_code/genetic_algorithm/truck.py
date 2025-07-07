@@ -111,7 +111,7 @@ class Truck:
             if self.just_finished_stopping: self.just_finished_stopping = False
             if self.SOC <= self.charge_decide and not self.wants_to_charge: self.wants_to_charge = True
 
-            ## [수정] 계층적 의사결정 로직
+            ## [수정 및 추가] 계층적 의사결정 로직
             max_links_for_this_step = min(self.links_to_move, len(self.path_df) - 1 - self.current_path_index)
             if max_links_for_this_step <= 0: self.stop(); return
             
@@ -126,37 +126,61 @@ class Truck:
                 # 1순위인 중요 정차 지점이 있으면, 그곳을 목적지로 설정하고 다른 탐색은 하지 않음
                 actual_end_path_index = min(upcoming_stops)
             else:
-                # 2순위: 중요 정차 지점이 없을 경우에만 충전소 탐색
+                # 중요 정차 지점이 없을 경우
                 actual_end_path_index = potential_end_index # 기본 목적지로 초기화
                 
+                # [추가] 선제적 충전 탐색 로직
+                # 만약 기본 목적지까지 이동했을 때 SOC가 15% 미만으로 예상된다면, 충전 의사를 강제로 활성화
+                if not self.wants_to_charge:
+                    # 예상 이동 거리 및 에너지 소비 계산
+                    start_dist_pred = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[self.current_path_index - 1] if self.current_path_index > 0 else 0
+                    end_dist_pred = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[actual_end_path_index]
+                    dist_pred = max(0, end_dist_pred - start_dist_pred)
+                    energy_pred = (dist_pred / 100.0) * 180.0
+                    
+                    # 예상 SOC 계산
+                    projected_soc = self.SOC - (energy_pred / self.BATTERY_CAPACITY) * 100
+                    
+                    if projected_soc < 15.0:
+                        self.wants_to_charge = True # 충전 필요 상태로 전환
+                
+                # 2순위: 충전소 탐색
                 if self.wants_to_charge:
                     chosen_station_idx = -1
                     candidate_indices = sorted(list(set(
                         [idx for idx in self.all_evcs_indices if self.current_path_index < idx <= potential_end_index]
                     )))
 
-                    valid_candidates = []
-                    for station_path_idx in candidate_indices:
-                        station_link_id = self.path_df.iloc[station_path_idx]['LINK_ID']
-                        station_obj = self.link_id_to_station.get(station_link_id)
-                        if not station_obj: continue
+                    # [수정] 긴급/일반 충전 로직 분리
+                    if self.SOC < 15.0:
+                        # 긴급 상황: 무조건 가장 가까운 충전소로 이동 (혼잡도, 충전기 수 무시)
+                        if candidate_indices:
+                            # path_index가 가장 작은, 즉 가장 가까운 충전소를 선택
+                            chosen_station_idx = min(candidate_indices)
+                    else:
+                        # 일반 상황: 혼잡도, 충전기 수, 거리를 종합적으로 고려
+                        valid_candidates = []
+                        for station_path_idx in candidate_indices:
+                            station_link_id = self.path_df.iloc[station_path_idx]['LINK_ID']
+                            station_obj = self.link_id_to_station.get(station_link_id)
+                            if not station_obj: continue
 
-                        is_congested = len(station_obj.waiting_trucks_queue) >= station_obj.num_of_chargers
-                        is_emergency = self.SOC < 15.0
+                            # 혼잡하지 않은 충전소만 후보로 추가
+                            is_congested = len(station_obj.waiting_trucks_queue) >= station_obj.num_of_chargers
+                            if is_congested: continue
+                            
+                            valid_candidates.append({'path_index': station_path_idx, 'num_chargers': station_obj.num_of_chargers})
 
-                        if is_congested and not is_emergency: continue
-                        
-                        valid_candidates.append({'path_index': station_path_idx, 'num_chargers': station_obj.num_of_chargers})
-
-                    if valid_candidates:
-                        best_candidate = sorted(valid_candidates, key=lambda x: (-x['num_chargers'], x['path_index']))[0]
-                        chosen_station_idx = best_candidate['path_index']
+                        if valid_candidates:
+                            # 1순위: 충전기 많은 순, 2순위: 가까운 순
+                            best_candidate = sorted(valid_candidates, key=lambda x: (-x['num_chargers'], x['path_index']))[0]
+                            chosen_station_idx = best_candidate['path_index']
                     
                     if chosen_station_idx != -1:
                         actual_end_path_index = chosen_station_idx
                         move_to_charge_station = True
             
-            # 최종 이동 실행
+            # 최종 이동 실행 (이하 로직은 기존과 거의 동일)
             actual_end_path_index = min(actual_end_path_index, len(self.path_df) - 1)
             if actual_end_path_index <= self.current_path_index:
                  actual_end_path_index = self.current_path_index + 1
@@ -186,8 +210,8 @@ class Truck:
                         self.wants_to_charge = True
                         station.add_truck_to_queue(self, self.next_activation_time)
             return
-
             
+      
     def get_info(self):
         """
         Collects final information about the truck when the simulation ends for this truck.

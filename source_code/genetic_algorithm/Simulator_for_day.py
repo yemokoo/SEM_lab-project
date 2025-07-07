@@ -503,7 +503,7 @@ if __name__ == '__main__':
     car_paths_folder = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_90km)"
     station_file_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
 
-    simulating_hours = 36
+    simulating_hours = 30
     unit_time = 5 
     truck_step_frequency = 3
     number_of_trucks = 5946
