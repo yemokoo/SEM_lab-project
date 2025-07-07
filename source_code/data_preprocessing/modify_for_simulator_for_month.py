@@ -250,7 +250,8 @@ def process_monthly_data(file_path_pattern, schema, parquet_output_base_dir, yea
                                    .withColumn("CUMULATIVE_LINK_LENGTH_KM", F.round(F.sum("LINK_LENGTH_KM").over(window_obu_time_ordered), 1))
 
         # --- 4-3-5. 월 누적 주행 거리 필터링 ---
-        monthly_distance_threshold = 22.4 * 90.0  # 2016.0 km
+        #monthly_distance_threshold = 22.4 * 90.0  # 2016.0 km
+        monthly_distance_threshold = 0  # 
         window_obu_max = Window.partitionBy("OBU_ID")
         df_with_max = df_processed.withColumn("max_cum_length_per_obu", F.max("CUMULATIVE_LINK_LENGTH_KM").over(window_obu_max))
         
@@ -314,7 +315,7 @@ def process_monthly_data(file_path_pattern, schema, parquet_output_base_dir, yea
 # 5. 파일 경로 정의 및 처리 함수 실행
 raw_file_path_base = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Raw_Data\Trajectory\*.csv"
 # 월 누적 2016km 기준으로 폴더명 변경
-parquet_output_base_dir = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(MONTH_90KM)"
+parquet_output_base_dir = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(MONTH_FULL)"
 
 # 출력 디렉토리 생성 (없는 경우)
 if not os.path.exists(parquet_output_base_dir):

@@ -891,12 +891,12 @@ if __name__ == '__main__':
     station_features_path = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\candidate\Final_Candidates\Final_Candidates_Selected.csv"
 
     # --- 시뮬레이션 파라미터 설정 ---
-    unit_time = 10
-    truck_step_frequency = 2
+    unit_time = 5
+    truck_step_frequency = 3
     number_of_max_chargers = 10000
 
     # [사용자 설정] 시뮬레이션에 사용할 트럭 대수 및 지역 대표 수 지정
-    number_of_trucks_to_run = 7400
+    number_of_trucks_to_run = 5946
     estimated_areas_to_represent = 33
 
     # --- 시뮬레이션 기간 설정 ---
@@ -904,7 +904,7 @@ if __name__ == '__main__':
     target_month = 1
 
     num_days_in_month = calendar.monthrange(target_year, target_month)[1]
-    simulating_hours = (num_days_in_month * 24) + 24
+    simulating_hours = int(num_days_in_month * 1.25 * 24) 
     print(f"시뮬레이션 대상 월: {target_year}-{target_month:02d}, 총 일수: {num_days_in_month}일, 총 시간: {simulating_hours}h")
 
     # --- 데이터 로딩 ---
