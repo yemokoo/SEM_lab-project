@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import calendar
 import random
 import warnings
-from matplotlib import pyplot as plt, ticker
+from matplotlib import pyplot as plt, ticker, colors
 import pandas as pd
 import numpy as np
 import os
@@ -10,12 +10,13 @@ import gc
 import time
 from charger import Charger
 from station import Station
-from truck import Truck
+from truck_for_month import Truck
 import pyarrow.parquet as pq
 import pyarrow as pa
 import re
 import seaborn as sns
 import multiprocessing
+import bisect
 
 # 시드 설정을 통해 재현성 확보
 seed = 42
@@ -42,6 +43,9 @@ class Simulator:
         self.number_of_trucks_target = number_of_trucks
         self.truck_step_frequency = truck_step_frequency
         self.num_days_in_month = num_days_in_month
+
+        self.daily_respawn_count = 0
+        self.current_day_tracker = 1 
 
         self.stations = []
         self.link_id_to_station = {}
@@ -91,7 +95,7 @@ class Simulator:
 
     def run_simulation(self):
         """
-        시뮬레이션을 실행합니다. (Just-In-Time 생성 및 시간 출력 기능 개선)
+        시뮬레이션을 실행합니다. (매일 00시에만 리스폰 요약 정보 출력)
         """
         total_steps = self.simulating_hours * (60 // self.unit_minutes)
         run_start_time = time.time()
@@ -106,8 +110,21 @@ class Simulator:
                 day = int(current_total_hours // 24) + 1
                 hour_of_day = int(current_total_hours % 24)
                 elapsed_seconds = time.time() - run_start_time
-                print(f"--- Day {day}, {hour_of_day:02d}:00 (활성: {len(self.trucks)}, 대기: {len(self.pending_trucks)}, 실행 시간: {elapsed_seconds:.1f}s) ---")
+
+                # --- [수정] 매일 00시에만 리스폰 정보를 출력하고, 이후 카운터를 리셋 ---
+                if hour_of_day == 0:
+                    # 00시에는 '이전 날'의 총 리스폰 대수를 출력
+                    # self.daily_respawn_count는 직전 23시까지의 값이 그대로 유지된 상태
+                    print(f"--- Day {day}, {hour_of_day:02d}:00 (활성: {len(self.trucks)}, 대기: {len(self.pending_trucks)}, 전일 리스폰: {self.daily_respawn_count}, 실행 시간: {elapsed_seconds:.1f}s) ---")
+                    
+                    # 출력이 끝난 후, '오늘'의 카운트를 위해 0으로 초기화
+                    self.daily_respawn_count = 0
+                else:
+                    # 나머지 시간에는 리스폰 정보를 숨김
+                    print(f"--- Day {day}, {hour_of_day:02d}:00 (활성: {len(self.trucks)}, 대기: {len(self.pending_trucks)}, 실행 시간: {elapsed_seconds:.1f}s) ---")
+                
                 last_printed_hour = int(current_total_hours)
+                # --- 수정 완료 ---
 
             trucks_to_activate = []
             while self.pending_trucks and self.pending_trucks[0]['start_time'] <= self.current_time:
@@ -116,7 +133,16 @@ class Simulator:
             if trucks_to_activate:
                 for truck_data in trucks_to_activate:
                     group = truck_data['group']
-                    new_truck = Truck(group, self.simulating_hours, self.link_id_to_station, self, 10)
+                    initial_soc = truck_data.get('initial_soc', None) 
+                    
+                    new_truck = Truck(
+                        path_df=group, 
+                        simulating_hours=self.simulating_hours, 
+                        link_id_to_station=self.link_id_to_station, 
+                        model=self, 
+                        links_to_move=10,
+                        initial_soc=initial_soc
+                    )
                     self.trucks.append(new_truck)
 
             self.trucks[:] = [truck for truck in self.trucks if truck.status != 'stopped']
@@ -156,6 +182,68 @@ class Simulator:
             self.trucks.remove(truck)
         except ValueError:
             pass
+
+    def handle_truck_respawn(self, dead_truck):
+        """
+        방전된 트럭을 경로상의 '다음 충전소'에서 낮은 SOC로 리스폰 시킵니다.
+        """
+        # 1. 방전 트럭의 정보 가져오기
+        original_path_df = dead_truck.path_df
+        if original_path_df is None or original_path_df.empty: return
+
+        original_id = dead_truck.unique_id
+        
+        # --- [수정] OBU_ID가 bytes 타입일 경우 str으로 변환 ---
+        if isinstance(original_id, bytes):
+            original_id = original_id.decode('utf-8')
+        # --- 수정 완료 ---
+
+        death_index = dead_truck.current_path_index
+
+        # 2. 방전 위치 '이후'의 경로에서 가장 가까운 충전소(EVCS)를 찾습니다.
+        future_path = original_path_df.iloc[death_index:]
+        evcs_in_future = future_path[future_path['EVCS'] == 1]
+
+        if evcs_in_future.empty:
+            print(f"--- [RESPAWN FAILED] Truck {original_id} ran out of battery, but no EVCS found on the remaining path. ---")
+            return
+
+        respawn_station_original_index = evcs_in_future.index[0]
+        respawn_link_id = original_path_df.loc[respawn_station_original_index]['LINK_ID']
+
+        # 3. 리스폰할 경로와 ID, 시간, 상태를 준비합니다.
+        new_path_df = original_path_df.iloc[respawn_station_original_index:].copy().reset_index(drop=True)
+        if new_path_df.empty: return
+
+        match = re.search(r'_(\d+)$', original_id)
+        new_obu_id = f"{original_id.rsplit('_', 1)[0]}_{int(match.group(1)) + 1}" if match else f"{original_id}_1"
+        
+        respawn_time_str = new_path_df['DATETIME'].iloc[0]
+        respawn_dt_object = pd.to_datetime(respawn_time_str)
+        time_of_day_in_minutes = respawn_dt_object.hour * 60 + respawn_dt_object.minute
+        
+        FIXED_DOWNTIME_MINUTES = 8 * 60 
+        new_start_time = self.current_time + FIXED_DOWNTIME_MINUTES
+
+        # 4. 새 경로 데이터프레임 값들을 리셋
+        new_path_df['OBU_ID'] = new_obu_id
+        new_path_df['START_TIME_MINUTES'] = new_start_time
+        new_path_df['CUMULATIVE_DRIVING_TIME_MINUTES'] -= new_path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[0]
+        new_path_df['CUMULATIVE_LINK_LENGTH'] -= new_path_df['CUMULATIVE_LINK_LENGTH'].iloc[0]
+
+        # 5. 리스폰 트럭을 '낮은 초기 SOC' 정보와 함께 대기열에 추가
+        respawn_truck_data = {
+            'obu_id': new_obu_id, 
+            'start_time': new_start_time, 
+            'group': new_path_df,
+            'initial_soc': 5.0
+        }
+        
+        bisect.insort(self.pending_trucks, respawn_truck_data, key=lambda x: x['start_time'])
+        
+        self.daily_respawn_count += 1
+        
+        print(f"--- [RESPAWN] Truck {original_id} FAILED. Will respawn as {new_obu_id} at next EVCS (Link {respawn_link_id}) with 5% SOC. ---")
 
     def analyze_results(self):
         """
@@ -371,7 +459,7 @@ class Simulator:
         print(f"Total Penalty                  : {total_penalty:,.0f}")
         print(f"  ├─ Truck Penalty (Total)      : {truck_p:,.0f}")
         print(f"  │  └─ Failed Truck Penalty   : {failed_truck_p:,.0f}")
-        print(f"  ├─ Charger Penalty          : {charger_p:,.0f}")
+        print(f"  ├─ Charger Penalty            : {charger_p:,.0f}")
         print(f"  └─ Waiting Penalty            : {waiting_p:,.0f}")
         print(f"------------------------------------")
         print(f"Objective Function (OF) Value    : {of_value:,.0f}")
@@ -405,31 +493,121 @@ class Simulator:
         plot_data_scatter = analysis_df[analysis_df['num_of_charger'] > 0].copy()
 
         if not plot_data_scatter.empty:
-            fig, ax = plt.subplots(figsize=(16, 10))
-            scatter1 = ax.scatter(plot_data_scatter['num_of_charger'], plot_data_scatter['avg_waiting_time_min'], c=plot_data_scatter['point'], cmap='viridis', alpha=0.7, s=80)
-            ax.set_xlabel('Number of Chargers per Station', fontsize=12)
-            ax.set_ylabel('Average Waiting Time (minutes)', fontsize=12)
-            ax.set_title('Chargers vs. Waiting Time (Colored by Candidate Point Score)', fontsize=16)
-            ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-            ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-            ax.legend(*scatter1.legend_elements(), title="Point Score")
-            plt.tight_layout()
-            plt.savefig(os.path.join(timestamped_folder_path, "station_chargers_vs_wait_time_by_point.png"), dpi=300)
-            plt.close(fig)
+            # 그래프로 그릴 특징 그룹 정의
+            scored_features = ['point', 'traffic', 'od']
+            binary_features = ['rest_area', 'infra', 'interval']
+            all_scatter_features = scored_features + binary_features
 
-            fig, ax = plt.subplots(figsize=(16, 10))
-            scatter2 = ax.scatter(plot_data_scatter['num_of_charger'], plot_data_scatter['avg_waiting_time_min'], c=plot_data_scatter['traffic'], cmap='plasma', alpha=0.7, s=80)
-            ax.set_xlabel('Number of Chargers per Station', fontsize=12)
-            ax.set_ylabel('Average Waiting Time (minutes)', fontsize=12)
-            ax.set_title('Chargers vs. Waiting Time (Colored by Traffic Score)', fontsize=16)
-            ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-            ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-            ax.legend(*scatter2.legend_elements(), title="Traffic Score")
-            plt.tight_layout()
-            plt.savefig(os.path.join(timestamped_folder_path, "station_chargers_vs_wait_time_by_traffic.png"), dpi=300)
-            plt.close(fig)
-            print("Point/Traffic 점수별 대기시간 Scatter Plot 2종 저장 완료.")
+            # 1. 점수 특징(0-5점)에 대한 색상 및 컬러맵 설정
+            scored_color_list = ['blue', 'green', 'yellow', 'orange', 'red', 'purple']
+            scored_cmap = colors.ListedColormap(scored_color_list)
+            scored_bounds = [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5]
+            scored_norm = colors.BoundaryNorm(scored_bounds, scored_cmap.N)
+
+            # 2. 이진 특징(0 또는 1)에 대한 색상 및 컬러맵 설정
+            binary_color_list = ['black', 'red']
+            binary_cmap = colors.ListedColormap(binary_color_list)
+            binary_bounds = [-0.5, 0.5, 1.5]
+            binary_norm = colors.BoundaryNorm(binary_bounds, binary_cmap.N)
+
+            print("후보지 특징별 대기시간 Scatter Plot 생성 중...")
+            
+            for feature in all_scatter_features:
+                if feature not in plot_data_scatter.columns:
+                    print(f" - 경고: '{feature}' 컬럼이 없어 해당 그래프는 건너뜁니다.")
+                    continue
+
+                # --- [수정] 특징 그룹에 따라 다른 그래프 생성 로직 적용 ---
+                
+                # A. 점수 기반 특징(point, traffic, od) 처리
+                if feature in scored_features:
+                    fig, ax = plt.subplots(figsize=(16, 10))
+                    legend_title = f'{feature.capitalize()} Score'
+
+                    scatter = ax.scatter(plot_data_scatter['num_of_charger'], 
+                                        plot_data_scatter['avg_waiting_time_min'], 
+                                        c=plot_data_scatter[feature], 
+                                        cmap=scored_cmap,
+                                        norm=scored_norm,
+                                        alpha=0.8, s=90, edgecolors='w', linewidth=0.5)
+                    
+                    ax.set_xlabel('Number of Chargers per Station', fontsize=12)
+                    ax.set_ylabel('Average Waiting Time (minutes)', fontsize=12)
+                    ax.set_title(f'Chargers vs. Waiting Time (Colored by {feature.capitalize()})', fontsize=16)
+                    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+                    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+                    
+                    legend = ax.legend(*scatter.legend_elements(prop="colors", num="auto"), 
+                                    title=legend_title, 
+                                    bbox_to_anchor=(1.02, 1), 
+                                    loc='upper left',
+                                    fontsize=10)
+                    ax.add_artist(legend)
+                    
+                    plt.tight_layout(rect=[0, 0, 0.9, 1])
+                    save_path = os.path.join(timestamped_folder_path, f"station_chargers_vs_wait_time_by_{feature}.png")
+                    plt.savefig(save_path, dpi=300)
+                    plt.close(fig)
+
+                # B. 이진 기반 특징(rest_area, infra, interval) 처리: 2가지 그래프 생성
+                elif feature in binary_features:
+                    # B-1. YES(1) 데이터만 있는 그래프 생성
+                    plot_data_yes_only = plot_data_scatter[plot_data_scatter[feature] == 1]
+                    if not plot_data_yes_only.empty:
+                        fig, ax = plt.subplots(figsize=(16, 10))
+                        
+                        ax.scatter(plot_data_yes_only['num_of_charger'], 
+                                plot_data_yes_only['avg_waiting_time_min'], 
+                                c='red', # YES는 빨간색으로 고정
+                                alpha=0.8, s=90, edgecolors='w', linewidth=0.5, label=f'{feature.capitalize()} = YES')
+                        
+                        ax.set_xlabel('Number of Chargers per Station', fontsize=12)
+                        ax.set_ylabel('Average Waiting Time (minutes)', fontsize=12)
+                        ax.set_title(f'Chargers vs. Waiting Time for Stations with "{feature.capitalize()}" (YES only)', fontsize=16)
+                        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+                        ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+                        ax.legend()
+
+                        plt.tight_layout()
+                        save_path_yes = os.path.join(timestamped_folder_path, f"station_chargers_vs_wait_time_by_{feature}_YES_ONLY.png")
+                        plt.savefig(save_path_yes, dpi=300)
+                        plt.close(fig)
+                    else:
+                        print(f" - 정보: '{feature}' 특징에 대해 YES(1)인 데이터가 없어 'YES only' 그래프는 생성되지 않았습니다.")
+
+
+                    # B-2. YES(1)와 NO(0) 데이터가 모두 있는 그래프 생성 (기존 방식)
+                    fig, ax = plt.subplots(figsize=(16, 10))
+                    legend_title = f'{feature.capitalize()} (1:Yes, 0:No)'
+
+                    scatter = ax.scatter(plot_data_scatter['num_of_charger'], 
+                                        plot_data_scatter['avg_waiting_time_min'], 
+                                        c=plot_data_scatter[feature], 
+                                        cmap=binary_cmap,
+                                        norm=binary_norm,
+                                        alpha=0.8, s=90, edgecolors='w', linewidth=0.5)
+                    
+                    ax.set_xlabel('Number of Chargers per Station', fontsize=12)
+                    ax.set_ylabel('Average Waiting Time (minutes)', fontsize=12)
+                    ax.set_title(f'Chargers vs. Waiting Time (Colored by {feature.capitalize()})', fontsize=16)
+                    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+                    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+                    
+                    legend = ax.legend(*scatter.legend_elements(prop="colors", num="auto"), 
+                                    title=legend_title, 
+                                    bbox_to_anchor=(1.02, 1), 
+                                    loc='upper left',
+                                    fontsize=10)
+                    ax.add_artist(legend)
+                    
+                    plt.tight_layout(rect=[0, 0, 0.9, 1])
+                    save_path_both = os.path.join(timestamped_folder_path, f"station_chargers_vs_wait_time_by_{feature}_BOTH.png")
+                    plt.savefig(save_path_both, dpi=300)
+                    plt.close(fig)
+                    
+            print(f"후보지 특징별 대기시간 Scatter Plot 저장 완료.")
         
+        # --- 이하 다른 그래프 생성 로직 ---
         plot_data_wait = analysis_df[analysis_df['num_of_charger'] > 0]
         if not plot_data_wait.empty:
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -869,6 +1047,9 @@ def load_car_path_df(car_paths_folder, number_of_trucks, target_year=2020, targe
     car_paths_df = pd.concat(car_paths_list, ignore_index=True)
     del car_paths_list, all_obu_df, all_obu_data
     gc.collect()
+
+    if 'OBU_ID' in car_paths_df.columns:
+        car_paths_df['OBU_ID'] = car_paths_df['OBU_ID'].astype(str)
 
     print(f"--- 차량 경로 데이터 로딩 및 샘플링 완료 ({time.time() - load_start_time:.2f}초 소요), {car_paths_df['OBU_ID'].nunique()}대 트럭 데이터 반환. ---")
     return car_paths_df

@@ -340,13 +340,37 @@ class Simulator:
 
         # --- 3. 충전소에서 발생한 총 대기 시간에 대한 페널티 (기회비용) ---
         HOURLY_REVENUE_VALUE = 11000000 / (10.9 * 22.4)
+        MINUTE_PENALTY_RATE = HOURLY_REVENUE_VALUE / 60.0  # 분당 페널티 기본 요율
+
         station_waiting_penalties = {}
         for station in self.stations:
             station_penalty = 0.0
             if station.waiting_times:
-                for wait_time in station.waiting_times:
-                    penalty_hours = wait_time / 60.0
-                    station_penalty += penalty_hours * HOURLY_REVENUE_VALUE
+                for wait_time in station.waiting_times:  # wait_time은 분 단위
+                    progressive_penalty = 0.0
+                    remaining_time = wait_time
+
+                    # 60분 초과 구간 (8배)
+                    if remaining_time > 60:
+                        progressive_penalty += (remaining_time - 60) * MINUTE_PENALTY_RATE * 8
+                        remaining_time = 60
+                    
+                    # 40분 초과 ~ 60분 구간 (4배)
+                    if remaining_time > 40:
+                        progressive_penalty += (remaining_time - 40) * MINUTE_PENALTY_RATE * 4
+                        remaining_time = 40
+
+                    # 20분 초과 ~ 40분 구간 (2배)
+                    if remaining_time > 20:
+                        progressive_penalty += (remaining_time - 20) * MINUTE_PENALTY_RATE * 2
+                        remaining_time = 20
+                    
+                    # 0 ~ 20분 구간 (1배)
+                    if remaining_time > 0:
+                        progressive_penalty += remaining_time * MINUTE_PENALTY_RATE * 1
+
+                    station_penalty += progressive_penalty
+                    
             station_waiting_penalties[station.station_id] = station_penalty
         total_waiting_penalty = sum(station_waiting_penalties.values())
 
