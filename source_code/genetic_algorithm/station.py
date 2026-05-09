@@ -52,6 +52,7 @@ class Station:
         # 통계 수집을 위한 변수 초기화
         self.queue_history = []  # 매 시간 단계(또는 특정 이벤트 발생 시)의 대기열 길이를 저장
         self.charging_history = []
+        self.power_history = []
         self.waiting_times = []  # 충전을 시작한 각 트럭의 대기 시간을 저장 (분 단위)
         self.total_arrivals = 0  # 충전소에 도착한 총 트럭 수
         self.total_departures = 0  # 대기열에서 나와 충전을 시작한 총 트럭 수
@@ -162,9 +163,11 @@ class Station:
 
         # 1. 현재 충전 중인 충전기 개수 계산
         num_currently_charging = sum(1 for charger in self.chargers if charger.current_truck is not None)
+        current_total_power = sum(charger.power for charger in self.chargers if charger.current_truck is not None)
         
         # 2. 계산된 값을 charging_history에 추가
         self.charging_history.append(num_currently_charging)
+        self.power_history.append(current_total_power)
 
         # 3. 기존 대기열 길이 기록
         physically_waiting_trucks = sum(1 for truck, _ in self.waiting_trucks_queue if current_time >= truck.next_activation_time)

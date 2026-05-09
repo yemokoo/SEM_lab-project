@@ -88,13 +88,14 @@ class Truck:
             current_row = self.path_df.iloc[self.current_path_index]
             if current_row['EVCS'] == 1:
                 station = self.link_id_to_station.get(self.CURRENT_LINK_ID)
+                '''
                 if station:
-                    print(f"--- [RESPAWN CHARGE] Truck {self.unique_id} spawned at EVCS and is queuing for a charge. ---")
+                    #print(f"--- [RESPAWN CHARGE] Truck {self.unique_id} spawned at EVCS and is queuing for a charge. ---")
                     self.wants_to_charge = True
                     station.add_truck_to_queue(self, current_time)
                     self.is_respawned = False # 플래그를 비활성화하여 다시 실행되지 않도록 함
                     return # 충전 대기 상태로 바로 전환하여 아래 주행 로직을 건너뜀
-            
+                '''
             # 만약의 경우를 대비해, 충전소가 아니더라도 플래그는 비활성화
             self.is_respawned = False
 
