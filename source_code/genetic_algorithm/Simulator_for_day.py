@@ -44,14 +44,11 @@ class Simulator:
 
         self.stations = []
         self.link_id_to_station = {}
-        self.trucks = [] # 활성 트럭 리스트
+        self.trucks = {} # 활성 트럭 딕셔너리 (O(1) 삭제 및 순서 보장)
         self.current_time = 0
-        # 결과 저장을 위한 DataFrame 초기화 (컬럼 정의)
-        self.truck_results_df = pd.DataFrame(columns=[
-            'truck_id', 'final_SOC', 'destination_reached',
-            'stopped_due_to_low_battery', 'stopped_due_to_simulation_end',
-            'total_distance_planned', 'traveled_distance_at_last_stop85'
-        ])
+        # 결과 저장용 리스트 (dict 수집 후 마지막에 한 번만 DataFrame 변환)
+        self.truck_results_list = []
+        self.truck_results_df = None
         self.station_results_df = None
         self.failed_trucks_df = None
 
@@ -71,21 +68,22 @@ class Simulator:
         self.car_paths_df['EVCS'] = np.where(self.car_paths_df['LINK_ID'].isin(operational_station_link_ids), 1, 0)
 
         # 트럭 객체 생성
-        self.trucks = []
+        self.trucks = {}
         truck_creation_start_time = time.time()
         for obu_id, group in self.car_paths_df.groupby('OBU_ID'):
-            required_cols = ['OBU_ID', 'LINK_ID', 'START_TIME_MINUTES', 'EVCS',
-                             'CUMULATIVE_LINK_LENGTH', 'CUMULATIVE_DRIVING_TIME_MINUTES',
-                             'STOPPING_TIME']
-            missing_cols = [col for col in required_cols if col not in group.columns]
-            if missing_cols:
+            required_cols = ['OBU_ID', 'LINK_ID', 'START_TIME_MINUTES', 'EVCS', 
+                             'CUMULATIVE_LINK_LENGTH', 'CUMULATIVE_DRIVING_TIME_MINUTES', 'STOPPING_TIME']
+            if not all(col in group.columns for col in required_cols):
+                print(f"Warning: Missing required columns in car paths data for OBU_ID {obu_id}.")
                 continue # 필수 컬럼 없으면 건너뛰기
             # Truck 객체 생성 시 오류 없다고 가정
             truck = Truck(group, self.simulating_hours, self.link_id_to_station, self, 10)
-            self.trucks.append(truck)
+            self.trucks[truck.unique_id] = truck
 
 
         self.current_time = 0
+        # 충전기가 1개 이상인 활성 충전소만 별도 관리 (매 스텝 불필요한 순회 제거)
+        self.active_stations = [s for s in self.stations if s.num_of_chargers > 0]
         gc.collect()
 
 
@@ -98,26 +96,22 @@ class Simulator:
         for step_num in range(total_steps):
             step_start_time = time.time()
 
-            # 1. 충전소 상태 업데이트
-            for station in self.stations:
+            # 1. 충전소 상태 업데이트 (활성 충전소만)
+            for station in self.active_stations:
                 station.update_chargers(self.current_time)
 
-            # 2. 충전소 대기열 처리
-            for station in self.stations:
+            # 2. 충전소 대기열 처리 (활성 충전소만)
+            for station in self.active_stations:
                 station.process_queue(self.current_time)
 
             # 3. 트럭 행동 결정 및 상태 업데이트
-            # 리스트 복사본 사용 (반복 중 제거 대비)
-            current_trucks_in_step = list(self.trucks) # 매 스텝마다 현재 트럭 리스트의 복사본 생성
-            
-            active_truck_count_this_step = 0
+            # self.trucks 딕셔너리는 Truck.step() 중 Truck.stop() 호출로 인해 변경될 수 있으므로
+            # 순회를 위해 값들의 복사본(리스트 변환)을 사용합니다.
+            current_trucks_in_step = list(self.trucks.values()) 
             
             for truck in current_trucks_in_step:
-                # current_trucks_in_step로 순회 중 self.trucks에서 제거되었을 수 있으므로,
-                # 실제 self.trucks에 아직 존재하는지, 그리고 상태가 stopped가 아닌지 확인
-                if truck in self.trucks and truck.status != 'stopped':
+                if truck.unique_id in self.trucks and truck.status != 'stopped':
                     if self.current_time >= truck.next_activation_time:
-                        active_truck_count_this_step += 1
                         truck.step(self.current_time)
 
             # 시간 증가
@@ -126,8 +120,9 @@ class Simulator:
         # --- 최종 정리 단계 ---
         for station in self.stations:
             station.finalize_unprocessed_trucks(self.current_time)
-        # self.trucks 리스트는 Truck.stop()에 의해 변경되므로 복사본 사용
-        final_cleanup_trucks = list(self.trucks)
+            
+        # self.trucks 딕셔너리는 Truck.stop()에 의해 변경되므로 복사본 사용
+        final_cleanup_trucks = list(self.trucks.values())
         cleaned_up_count = 0
         if final_cleanup_trucks:
             for truck_to_cleanup in final_cleanup_trucks:
@@ -142,8 +137,7 @@ class Simulator:
         """
         시뮬레이터의 활성 트럭 리스트에서 특정 트럭 객체를 제거합니다.
         """
-        if truck in self.trucks:
-            self.trucks.remove(truck)
+        self.trucks.pop(truck.unique_id, None) # dict.pop: O(1) 삭제 및 예외 방지
 
 
     def analyze_results(self):
@@ -166,12 +160,16 @@ class Simulator:
         ]
         self.station_results_df = pd.DataFrame(station_data)
 
-        # 시뮬레이션 결과가 담긴 truck_results_df 실패 그룹으로 분리합니다.
-        if self.truck_results_df is None or self.truck_results_df.empty:
-            # 결과가 없는 경우, 분석을 위해 빈 데이터프레임을 생성합니다.
-            self.failed_trucks_df = pd.DataFrame(columns=self.truck_results_df.columns if self.truck_results_df is not None else [])
+        # 시뮬레이션 결과 dict 리스트를 DataFrame으로 한 번에 변환
+        if self.truck_results_list:
+            self.truck_results_df = pd.DataFrame(self.truck_results_list)
         else:
-            # 실패 트럭: destination_reached가 False이고, 배터리 부족 또는 시뮬레이션 시간 초과로 중단된 경우
+            self.truck_results_df = pd.DataFrame()
+
+        # 실패 트럭 분리
+        if self.truck_results_df.empty:
+            self.failed_trucks_df = pd.DataFrame()
+        else:
             self.failed_trucks_df = self.truck_results_df[
                 (self.truck_results_df['destination_reached'] == False) & (self.truck_results_df['stopped_due_to_low_battery'] == True)             
             ].copy()

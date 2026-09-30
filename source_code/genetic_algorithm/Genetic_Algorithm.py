@@ -3,6 +3,8 @@ import glob
 import os
 import re
 import traceback
+import sys
+import argparse
 
 # --- NumPy 및 관련 라이브러리 스레드 제한 설정 ---
 # 중요: numpy, pandas 등을 import 하기 전에 실행되어야 합니다!
@@ -29,11 +31,20 @@ from shared_memory_utils import put_df_to_shared_memory, reconstruct_df_from_sha
 import gc
 import pprint
 
-path_for_car = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/simulator/Trajectory(DAY_90km)"
-path_for_station = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/simulator/Final_Candidates_Selected.csv"
-path_for_result = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/GA_result"
-random.seed(42)
-np.random.seed(42)
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+path_for_car = os.path.join(BASE_DIR, "../../../../Data/Processed_Data/simulator/Trajectory(DAY_90km)")
+path_for_station = os.path.join(BASE_DIR, "../../../../Data/Processed_Data/simulator/Final_Candidates_Selected.csv")
+path_for_result = os.path.join(BASE_DIR, "../../../../Data/Processed_Data/GA_results")
+
+# --- 기본값 설정 (워커 프로세스에서도 사용됨) ---
+SEED_VALUE = 45
+ELECTRIFICATION_RATE = 2.0
+TRIAL_NUM = 1
+ELECTRIFICATION_PERCENT = 20
+
+random.seed(SEED_VALUE)
+np.random.seed(SEED_VALUE)
 
 #100개의 솔루션 -> 토너먼트로 25개 선정 -> 25개중 상위 4개는 엘리티즘 -> 1등을 제외한 24개에 대하여 교차를 통해 96개의 해 생성  -> 100개의 다음세대 솔루션 생성.
 #해당 사항으로 우선 알고리즘이 개발되어 일단은 한 세대당 100개의 솔루션이 있음을 가정하고 시뮬레이터에 적용하길 바랍니다.
@@ -41,14 +52,13 @@ np.random.seed(42)
 # 유전 알고리즘 파라미터 설정
 CORE_NUM = 150  # 코어 수
 POPULATION_SIZE = 150  # 개체군 크기
-GENERATIONS = 10000  # 최대 세대 수 (필요 시 무시됨)
+GENERATIONS = 3000  # 최대 세대 수
 TOURNAMENT_SIZE = 4 # 토너먼트 크기
 MUTATION_RATE = 0.015  # 변이 확률(기본 0.015)
 MUTATION_GENES_MULTIPLE = 20  # 중복된 해에 들어간 유전자 정보의 변이 배수
 NUM_CANDIDATES = 500 # 충전소 위치 후보지 개수
 CONVERGENCE_CHECK_START_GENERATIONS = 800  # 수렴 체크 시작 세대
 MAX_NO_IMPROVEMENT = 15  # 개선 없는 최대 세대 수
-ELECTRIFICATION_RATE = 1.0 # 전동화율 가정(원본이 10%임)
 TRUCK_NUMBERS = int(3050 * ELECTRIFICATION_RATE) # 전체 화물차 대수 / 5946대는 10%의 전동화율 기준 대수
 INITIAL_CHARGERS = TRUCK_NUMBERS # 설치할 충전기의 대수 충전기 
 TOTAL_CHARGERS = 10000 # 총 충전기 대수
@@ -77,6 +87,12 @@ def evaluate_individual_shared(args):
     global worker_original_station_df 
 
     individual, index, shm_infos_car_paths = args
+    
+    # [핵심] 시뮬레이션 평가의 완벽한 결정론(Determinism) 보장
+    # 멀티프로세싱 워커 내부에서 난수 발생기를 동일한 시드로 초기화하여,
+    # 트럭의 시작 SOC, 정차 시간, 페널티 등 모든 랜덤 요소가 동일하게 유지되도록 합니다.
+    random.seed(SEED_VALUE)
+    np.random.seed(SEED_VALUE)
 
     unit_minutes = 5   
     simulating_hours = 30 # 시뮬레이션 시간 (30시간)  
@@ -466,11 +482,11 @@ def genetic_algorithm():
         'Best_Chargers': pd.Series(dtype='int')
     })
 
-    path_for_result = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/GA_result"
-    now = datetime.datetime.now()
-    folder_name = now.strftime("%Y-%m-%d-%H-%M")
+    # 결과 폴더명: "20% 4회차(seed=45)" 형식
+    folder_name = f"{ELECTRIFICATION_PERCENT}% {TRIAL_NUM}회차(seed={SEED_VALUE})"
     result_folder_path = os.path.join(path_for_result, folder_name)
     os.makedirs(result_folder_path, exist_ok=True)
+    print(f"결과 저장 경로: {result_folder_path}")
 
     # 각 세대의 전체 적합도 값 저장용 리스트
     all_fitness_history = []
@@ -511,6 +527,8 @@ def genetic_algorithm():
     # 데이터 유형별 폴더 미리 생성
     for key, periodic_folder_name in folder_names_for_periodic_data.items():
         os.makedirs(os.path.join(result_folder_path, periodic_folder_name), exist_ok=True)
+
+    natural_convergence = False
 
     for generation in range(GENERATIONS): # 각 세대 루프 시작
         start_time = time.time()
@@ -604,30 +622,36 @@ def genetic_algorithm():
             if len(current_best_individual_list) % columns_to_show != 0 and len(current_best_individual_list) > 0:
                 print()
 
-            # 수렴 체크를 위한 변수 초기화 (세대 10 이전에는 0으로 설정)
+            # 수렴 체크를 위한 변수 초기화 (세대 15 이전에는 0으로 설정)
             charger_change = 0
             fitness_mean_change = 0
-            curr_10_mean = 0
+            curr_15_mean = 0
 
             # 수렴 체크 (새로운 방식)
-            if generation >= 10: # 11개 세대(index 10) 이상의 데이터가 쌓여야 비교 가능
-                # 1. 충전기 개수 변화량 체크
-                prev_best_chargers = np.sum(best_individual_history[-2])  # 이전 세대 최고 개체 충전기 수
-                charger_change = (current_best_chargers - prev_best_chargers) / abs(prev_best_chargers)
+            if generation >= 15: # 16개 세대(index 15) 이상의 데이터가 쌓여야 비교 가능
+                # 1. 충전기 개수 변화량 체크 (15세대 이동 평균)
+                prev_15_chargers = [np.sum(ind) for ind in best_individual_history[-16:-1]]
+                curr_15_chargers = [np.sum(ind) for ind in best_individual_history[-15:]]
+                
+                prev_15_chargers_mean = np.mean(prev_15_chargers)
+                curr_15_chargers_mean = np.mean(curr_15_chargers)
+                
+                if prev_15_chargers_mean != 0:
+                    charger_change = (curr_15_chargers_mean - prev_15_chargers_mean) / abs(prev_15_chargers_mean)
 
-                # 2. 적합도 평균 변화량 체크
-                prev_10_fitness = fitness_history[-11:-1]  # 이전 10개 세대 최고 적합도 (현재 세대 미미포함)
-                curr_10_fitness = fitness_history[-10:]    # 현재 10개 세대 최고 적합도 (현재 세대 포함)
+                # 2. 적합도 평균 변화량 체크 (15세대 이동 평균)
+                prev_15_fitness = fitness_history[-16:-1]  # 이전 15개 세대 최고 적합도 (현재 세대 미포함)
+                curr_15_fitness = fitness_history[-15:]    # 현재 15개 세대 최고 적합도 (현재 세대 포함)
 
-                prev_10_mean = np.mean(prev_10_fitness)
-                curr_10_mean = np.mean(curr_10_fitness)
+                prev_15_mean = np.mean(prev_15_fitness)
+                curr_15_mean = np.mean(curr_15_fitness)
 
-                if prev_10_mean != 0:
-                    fitness_mean_change = (curr_10_mean - prev_10_mean) / abs(prev_10_mean)
+                if prev_15_mean != 0:
+                    fitness_mean_change = (curr_15_mean - prev_15_mean) / abs(prev_15_mean)
 
                 # no_improvement_count 증가/초기화 조건 추가
                 if generation >= CONVERGENCE_CHECK_START_GENERATIONS:
-                    if abs(charger_change) <= 0.01 and abs(fitness_mean_change) <= 0.005:
+                    if abs(charger_change) <= 0.005 and abs(fitness_mean_change) <= 0.005:
                         no_improvement_count += 1
                         print(f"충전기 수 변화율: {charger_change * 100:.2f}%, 적합도 평균 변화율: {fitness_mean_change * 100:.2f}%")
                         print(f"{no_improvement_count} 세대 동안 개선 없음")
@@ -645,12 +669,13 @@ def genetic_algorithm():
                     print(f"최적해 변화가 {MAX_NO_IMPROVEMENT} 세대 연속 없어 알고리즘을 종료합니다.")
                     convergence_df = pd.concat([convergence_df, pd.DataFrame({
                         'Generation': [generation + 1],
-                        'Fitness_Mean': [curr_10_mean],
+                        'Fitness_Mean': [curr_15_mean],
                         'Fitness_Mean_Change': [fitness_mean_change],
                         'Charger_Change': [charger_change],
                         'Best_Fitness': [current_best_fitness],         # 현재 세대 최고 적합도
                         'Best_Chargers': [current_best_chargers]        # 최고 적합도 개체의 충전기 수
                     })], ignore_index=True)
+                    natural_convergence = True
                     break
 
             else: # 11개 세대가 쌓이지 않았을 경우
@@ -660,7 +685,7 @@ def genetic_algorithm():
             # convergence_df에 결과 저장
             convergence_df = pd.concat([convergence_df, pd.DataFrame({
                 'Generation': [generation + 1],
-                'Fitness_Mean': [curr_10_mean],
+                'Fitness_Mean': [curr_15_mean],
                 'Fitness_Mean_Change': [fitness_mean_change],
                 'Charger_Change': [charger_change],
                 'Best_Fitness': [current_best_fitness],         # 현재 세대 최고 적합도
@@ -683,7 +708,7 @@ def genetic_algorithm():
             print('부모 선택 완료')
             best_fitness_number_of_charger.append(np.sum(parents[0]))
 
-            if (no_improvement_count >= 5 and immigration_count <= MAX_IMMIGRATIONS and (generation - last_immigration_generation) >= 50):
+            if (no_improvement_count >= 5 and immigration_count < MAX_IMMIGRATIONS and (generation - last_immigration_generation) >= 50):
                 parents = immigration(parents, NUM_CANDIDATES, INITIAL_CHARGERS, generation)
                 immigration_count += 1
                 no_improvement_count = 0
@@ -836,6 +861,9 @@ def genetic_algorithm():
     print(f"최종 세대 수: {final_executed_generations}")
     print(f"최고 적합도: {best_fitness}")
 
+    if not natural_convergence:
+        print("\n[알림] 최대 세대 도달로 강제 종료되었습니다. 그래프 저장 후 에러 코드 2를 반환합니다.")
+
    
     # 그래프 출력
     gens = np.arange(1, len(fitness_history) + 1)
@@ -921,6 +949,7 @@ def genetic_algorithm():
 
     plt.show()  # 마지막에 plt.show() 호출하여 그래프 화면 출력 (선택 사항)
 
+
 def _extract_gen_numbers_from_filename(filename):
     """ Helper function to extract start and end generation numbers from filenames like 'g1-50.csv' or 'at_g50.csv' """
     match_range = re.match(r"g(\d+)-(\d+)\.csv", filename)
@@ -1002,6 +1031,33 @@ def _merge_periodic_csv_files(base_result_folder, data_type_folder_names):
     print("--- 주기별 파일 통합 완료 ---")
 
 if __name__ == '__main__':
+    # --- 명령줄 인자 파싱 (메인 프로세스에서만 실행) ---
+    parser = argparse.ArgumentParser(description='Genetic Algorithm for EV Charging Station Optimization')
+    parser.add_argument('--seed', type=int, default=45, help='Random seed value')
+    parser.add_argument('--electrification_rate', type=float, default=2.0, help='Electrification rate multiplier (1.0=10%, 2.0=20%)')
+    parser.add_argument('--trial_num', type=int, default=1, help='Trial number (회차)')
+
+    args = parser.parse_args()
+
+    # 전역 변수 덮어쓰기
+    SEED_VALUE = args.seed
+    ELECTRIFICATION_RATE = args.electrification_rate
+    TRIAL_NUM = args.trial_num
+    ELECTRIFICATION_PERCENT = int(ELECTRIFICATION_RATE * 10)
+    TRUCK_NUMBERS = int(3050 * ELECTRIFICATION_RATE)
+    INITIAL_CHARGERS = TRUCK_NUMBERS
+
+
+    random.seed(SEED_VALUE)
+    np.random.seed(SEED_VALUE)
+
+    print(f"=== 실험 설정 ===")
+    print(f"  Seed: {SEED_VALUE}")
+    print(f"  전동화율: {ELECTRIFICATION_PERCENT}% (배율: {ELECTRIFICATION_RATE})")
+    print(f"  트럭 수: {TRUCK_NUMBERS}")
+    print(f"  회차: {TRIAL_NUM}")
+    print(f"=================")
+
     try:
         # 멀티프로세싱 시작 방식을 'forkserver'로 설정합니다.
         multiprocessing.set_start_method('forkserver', force=True)
@@ -1013,6 +1069,6 @@ if __name__ == '__main__':
     except Exception as e_other:
         # 기타 예외 처리
         print(f"멀티프로세싱 시작 방식 설정 중 예기치 않은 오류 발생: {e_other}")
-        
+
     genetic_algorithm()
 

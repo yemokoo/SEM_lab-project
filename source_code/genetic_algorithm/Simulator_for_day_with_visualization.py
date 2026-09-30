@@ -553,6 +553,7 @@ def get_simulation_dates(base_folder, num_weeks):
     if not weeks_with_enough_data: raise ValueError("No week found with >= 5 days of data.")
     available_weeks = list(weeks_with_enough_data.keys())
     num_weeks = min(num_weeks, len(available_weeks))
+    random.seed(42)  # Fix seed for reproducible date selection
     selected_week_nums = random.sample(available_weeks, num_weeks)
     weeks_to_simulate = {week: sorted(weeks_with_enough_data[week]) for week in sorted(selected_week_nums)}
     total_days = sum(len(days) for days in weeks_to_simulate.values())
@@ -563,6 +564,7 @@ def load_car_path_df_for_day(day_folder_path, number_of_trucks):
     files = [f for f in os.listdir(day_folder_path) if f.endswith(".parquet")]
     if not files: raise FileNotFoundError(f"No Parquet files found in '{day_folder_path}'.")
     all_obu_ids = set(pd.concat([pq.read_table(os.path.join(day_folder_path, f), columns=['OBU_ID']).to_pandas() for f in files])['OBU_ID'].unique())
+    random.seed(42)  # Fix seed for reproducible truck selection
     selected_obu_ids = set(random.sample(list(all_obu_ids), number_of_trucks)) if len(all_obu_ids) >= number_of_trucks else all_obu_ids
     car_paths_df = pd.concat([pd.read_parquet(os.path.join(day_folder_path, f), filters=[('OBU_ID', 'in', list(selected_obu_ids))]) for f in files], ignore_index=True).dropna(subset=['DATETIME'])
     car_paths_df['DATETIME'] = pd.to_datetime(car_paths_df['DATETIME'], format='%H:%M', errors='coerce').dt.time
@@ -1750,12 +1752,12 @@ def generate_and_save_ga_history_plot(ga_folder_path, output_path, downsample_n=
 
 if __name__ == '__main__':
     # --- Basic Path Settings ---
-    CAR_PATHS_BASE_FOLDER = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Trajectory(DAY_90km)"
-    STATION_TEMPLATE_PATH = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\Final_Candidates_Selected.csv"
-    CANDIDATE_FILE_PATH = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\candidate\Final_Candidates\Final_Candidates_Selected.csv"
-    RESULTS_BASE_FOLDER = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\simulator\result_for_kori"
-    SHAPEFILE_PATH = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Raw_Data\main_road_network_level_5.5\level5_5_link_probe_32_2020.shp"
-    GA_RESULTS_BASE_FOLDER = r"D:\연구실\연구\화물차 충전소 배치 최적화\Data\Processed_Data\GA_results"
+    CAR_PATHS_BASE_FOLDER = r"/home/juhyeong/Desktop/화물차/Data/Processed_Data/simulator/Trajectory(DAY_90km)"
+    STATION_TEMPLATE_PATH = r"/home/juhyeong/Desktop/화물차/Data/Processed_Data/simulator/Final_Candidates_Selected.csv"
+    CANDIDATE_FILE_PATH = r"/home/juhyeong/Desktop/화물차/Data/Processed_Data/candidate/Final_Candidates/Final_Candidates_Selected.csv"
+    RESULTS_BASE_FOLDER = r"/home/juhyeong/Desktop/화물차/Data/Processed_Data/simulator/Result"
+    SHAPEFILE_PATH = r"/home/juhyeong/Desktop/화물차/Data/Raw_Data/main_road_network_level_5.5/level5_5_link_probe_32_2020.shp"
+    GA_RESULTS_BASE_FOLDER = r"/home/juhyeong/Desktop/화물차/Data/Processed_Data/GA_results"
 
     # --- Basic Simulation Parameters ---
     SIM_PARAMS = {

@@ -29,9 +29,11 @@ import gc
 import pprint
 
 
-path_for_car = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/simulator/Trajectory(DAY_stop_added)"
-path_for_station = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/simulator/Final_Candidates_Selected.csv"
-path_for_result = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/GA_result"
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+path_for_car = os.path.join(BASE_DIR, "../../resource_data/simulator/Trajectory(DAY_stop_added)")
+path_for_station = os.path.join(BASE_DIR, "../../resource_data/simulator/Final_Candidates_Selected.csv")
+path_for_result = os.path.join(BASE_DIR, "../../resource_data/GA_result")
 path_for_surrgate_model = None # 실제 경로 저장해줘야함함
 surrogate_model = None
 random.seed(42)
@@ -496,7 +498,7 @@ def genetic_algorithm():
         'Best_Chargers': pd.Series(dtype='int')
     })
 
-    path_for_result = r"/home/semlab/SEM/EVCS/화물차 충전소 배치 최적화/Data/Processed_Data/GA_result"
+    path_for_result = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../resource_data/GA_result")
     now = datetime.datetime.now()
     folder_name = now.strftime("%Y-%m-%d-%H-%M")
     result_folder_path = os.path.join(path_for_result, folder_name)

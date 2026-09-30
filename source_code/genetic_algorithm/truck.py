@@ -36,7 +36,7 @@ class Truck:
                 if rand_val <= cumulative_prob: return random.randint(lower, upper)
             return random.randint(40, 50)
 
-        # --- 기본 속성 및 상태 변수 (기존과 동일) ---
+        # --- 기본 속성 및 상태 변수 ---
         self.path_df = path_df.reset_index(drop=True)
         self.simulating_hours = simulating_hours
         self.model = model
@@ -64,6 +64,20 @@ class Truck:
         self.just_finished_stopping = False
         self.actual_stop_events = []
 
+        # --- numpy 배열 캐싱 (step()에서 pandas iloc 오버헤드 제거) ---
+        self._link_ids = self.path_df['LINK_ID'].values
+        self._cum_length = self.path_df['CUMULATIVE_LINK_LENGTH'].values
+        self._cum_drive_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].values
+        self._stopping_time = self.path_df['STOPPING_TIME'].values
+        self._evcs = self.path_df['EVCS'].values
+        self._path_len = len(self.path_df)
+        self._start_time_minutes = float(self.path_df['START_TIME_MINUTES'].iloc[0])
+        self._total_distance_planned = float(self._cum_length[-1]) if self._path_len > 0 else 0.0
+
+        # numpy 캐싱 완료 후 원본 DataFrame 삭제 (GC 부담 경감)
+        del self.path_df
+        self.path_df = None
+
     def update_soc(self, energy_change_kwh):
         delta_soc = (energy_change_kwh / self.BATTERY_CAPACITY) * 100.0
         self.SOC += delta_soc
@@ -71,7 +85,7 @@ class Truck:
 
     def step(self, current_time):
         current_time = float(current_time)
-        if self.current_path_index >= len(self.path_df) - 1 or current_time >= (self.simulating_hours * 60.0):
+        if self.current_path_index >= self._path_len - 1 or current_time >= (self.simulating_hours * 60.0):
             if self.status != 'stopped': self.stop()
             return
         if self.status == 'stopped' or current_time < self.next_activation_time:
@@ -93,15 +107,14 @@ class Truck:
             self.stop(); return
 
         if self.status == 'driving':
-            current_row = self.path_df.iloc[self.current_path_index]
             is_at_significant_stop_location = self.current_path_index in self.significant_stop_indices_set
 
             if is_at_significant_stop_location and not self.just_finished_stopping:
                 self.status = 'stopping'
-                stopping_time_here = float(current_row['STOPPING_TIME'])
+                stopping_time_here = float(self._stopping_time[self.current_path_index])
                 self.stop_end_time = current_time + stopping_time_here
                 self.next_activation_time = self.stop_end_time
-                if current_row['EVCS'] == 1 and self.SOC < 100.0:
+                if self._evcs[self.current_path_index] == 1 and self.SOC < 100.0:
                     station = self.link_id_to_station.get(self.CURRENT_LINK_ID)
                     if station:
                         self.wants_to_charge = True
@@ -112,7 +125,7 @@ class Truck:
             if self.SOC <= self.charge_decide and not self.wants_to_charge: self.wants_to_charge = True
 
             ## [수정 및 추가] 계층적 의사결정 로직
-            max_links_for_this_step = min(self.links_to_move, len(self.path_df) - 1 - self.current_path_index)
+            max_links_for_this_step = min(self.links_to_move, self._path_len - 1 - self.current_path_index)
             if max_links_for_this_step <= 0: self.stop(); return
             
             potential_end_index = self.current_path_index + max_links_for_this_step
@@ -132,9 +145,9 @@ class Truck:
                 # [추가] 선제적 충전 탐색 로직
                 # 만약 기본 목적지까지 이동했을 때 SOC가 15% 미만으로 예상된다면, 충전 의사를 강제로 활성화
                 if not self.wants_to_charge:
-                    # 예상 이동 거리 및 에너지 소비 계산
-                    start_dist_pred = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[self.current_path_index - 1] if self.current_path_index > 0 else 0
-                    end_dist_pred = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[actual_end_path_index]
+                    # 예상 이동 거리 및 에너지 소비 계산 (numpy 배열 직접 접근)
+                    start_dist_pred = self._cum_length[self.current_path_index - 1] if self.current_path_index > 0 else 0
+                    end_dist_pred = self._cum_length[actual_end_path_index]
                     dist_pred = max(0, end_dist_pred - start_dist_pred)
                     energy_pred = (dist_pred / 100.0) * 180.0
                     
@@ -147,9 +160,7 @@ class Truck:
                 # 2순위: 충전소 탐색
                 if self.wants_to_charge:
                     chosen_station_idx = -1
-                    candidate_indices = sorted(list(set(
-                        [idx for idx in self.all_evcs_indices if self.current_path_index < idx <= potential_end_index]
-                    )))
+                    candidate_indices = [idx for idx in self.all_evcs_indices if self.current_path_index < idx <= potential_end_index]
 
                     # [수정] 긴급/일반 충전 로직 분리
                     if self.SOC < 15.0:
@@ -161,7 +172,7 @@ class Truck:
                         # 일반 상황: 혼잡도, 충전기 수, 거리를 종합적으로 고려
                         valid_candidates = []
                         for station_path_idx in candidate_indices:
-                            station_link_id = self.path_df.iloc[station_path_idx]['LINK_ID']
+                            station_link_id = self._link_ids[station_path_idx]
                             station_obj = self.link_id_to_station.get(station_link_id)
                             if not station_obj: continue
 
@@ -181,26 +192,27 @@ class Truck:
                         move_to_charge_station = True
             
             # 최종 이동 실행 (이하 로직은 기존과 거의 동일)
-            actual_end_path_index = min(actual_end_path_index, len(self.path_df) - 1)
+            actual_end_path_index = min(actual_end_path_index, self._path_len - 1)
             if actual_end_path_index <= self.current_path_index:
                  actual_end_path_index = self.current_path_index + 1
-            if actual_end_path_index >= len(self.path_df): self.stop(); return
+            if actual_end_path_index >= self._path_len: self.stop(); return
 
-            start_cum_dist = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[self.current_path_index - 1] if self.current_path_index > 0 else 0
-            end_cum_dist = self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[actual_end_path_index]
+            # numpy 배열 직접 인덱싱 (pandas iloc 오버헤드 제거)
+            start_cum_dist = self._cum_length[self.current_path_index - 1] if self.current_path_index > 0 else 0
+            end_cum_dist = self._cum_length[actual_end_path_index]
             distance_traveled = max(0, end_cum_dist - start_cum_dist)
 
-            start_cum_drive_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[self.current_path_index - 1] if self.current_path_index > 0 else 0
-            end_cum_drive_time = self.path_df['CUMULATIVE_DRIVING_TIME_MINUTES'].iloc[actual_end_path_index]
+            start_cum_drive_time = self._cum_drive_time[self.current_path_index - 1] if self.current_path_index > 0 else 0
+            end_cum_drive_time = self._cum_drive_time[actual_end_path_index]
             driving_time_segment = max(0, end_cum_drive_time - start_cum_drive_time)
 
-            stopping_time_segment = self.path_df['STOPPING_TIME'].iloc[self.current_path_index:actual_end_path_index].sum()
+            stopping_time_segment = self._stopping_time[self.current_path_index:actual_end_path_index].sum()
             
             energy_consumed = (distance_traveled / 100.0) * 180.0
             self.update_soc(-energy_consumed)
             
             self.current_path_index = actual_end_path_index
-            self.CURRENT_LINK_ID = self.path_df['LINK_ID'].iloc[self.current_path_index]
+            self.CURRENT_LINK_ID = self._link_ids[self.current_path_index]
             self.next_activation_time = current_time + driving_time_segment + stopping_time_segment
 
             if move_to_charge_station and not (self.current_path_index in self.significant_stop_indices_set):
@@ -214,7 +226,7 @@ class Truck:
       
     def get_info(self):
         """
-        Collects final information about the truck when the simulation ends for this truck.
+        트럭의 최종 정보를 dict로 수집합니다 (DataFrame 생성 오버헤드 제거).
         """
         traveled_distance_at_last_stop85_km = 0.0
         if hasattr(self, 'actual_stop_events') and self.actual_stop_events: 
@@ -223,13 +235,9 @@ class Truck:
                 last_stop_85_event = stops_85_min[-1]
                 traveled_distance_at_last_stop85_km = last_stop_85_event['cumulative_length']
         
-        total_distance_planned_km = 0.0
-        if hasattr(self, 'path_df') and self.path_df is not None and not self.path_df.empty: 
-                total_distance_planned_km = float(self.path_df['CUMULATIVE_LINK_LENGTH'].iloc[-1])
+        total_distance_planned_km = self._total_distance_planned
 
-        destination_reached_flag = False
-        if hasattr(self, 'path_df') and self.path_df is not None and not self.path_df.empty:
-            destination_reached_flag = (self.current_path_index >= len(self.path_df) - 1) and \
+        destination_reached_flag = (self.current_path_index >= self._path_len - 1) and \
                                      (self.status == 'stopped') and \
                                      not self.is_charging and not self.waiting
         
@@ -244,7 +252,7 @@ class Truck:
                                not stopped_low_battery_flag and \
                                (self.status == 'stopped')
 
-        info_df = pd.DataFrame([{
+        return {
             'truck_id': self.unique_id,
             'final_SOC': self.SOC,
             'destination_reached': destination_reached_flag,
@@ -252,57 +260,30 @@ class Truck:
             'stopped_due_to_simulation_end': stopped_sim_end_flag, 
             'total_distance_planned': total_distance_planned_km,
             'traveled_distance_at_last_stop85': traveled_distance_at_last_stop85_km,
-            'starting_time': self.path_df['START_TIME_MINUTES'].iloc[0],
+            'starting_time': self._start_time_minutes,
             'actual_reached_time': self.model.current_time if hasattr(self.model, 'current_time') else None,
             'final_path_index': self.current_path_index,
             'final_status': self.status
-        }])
-        return info_df
+        }
 
     def stop(self):
         """
-        Stops the truck, records its final information, and requests its removal from the simulation.
+        트럭을 정지하고, 최종 정보를 기록한 뒤 시뮬레이터에서 제거를 요청합니다.
         """
-        if self.status != 'stopped': # Prevent multiple stop calls for the same truck
+        if self.status != 'stopped':
             self.status = 'stopped'
 
-            # Record final information
-            final_info_df = self.get_info() 
-            # print(f"[TRUCK {self.unique_id} STOP_FINAL_INFO @ {getattr(self.model, 'current_time', 'N/A'):.2f}]: \n{final_info_df.to_string()}") # For debugging if needed
-
-            # Add results to the main model's DataFrame
-            try:
-                if not hasattr(self.model, 'truck_results_df') or self.model.truck_results_df is None:
-                    self.model.truck_results_df = pd.DataFrame() 
-
-                current_cols = self.model.truck_results_df.columns
-                if not current_cols.empty:
-                    info_df_reordered = final_info_df.reindex(columns=current_cols).fillna(np.nan)
-                    for col in final_info_df.columns: 
-                        if col not in info_df_reordered.columns: 
-                            info_df_reordered[col] = final_info_df[col]
-                else: 
-                    info_df_reordered = final_info_df.copy()
-
-                self.model.truck_results_df = pd.concat([self.model.truck_results_df, info_df_reordered], ignore_index=True, axis=0)
-            except Exception as e:
-                # Fallback in case of error during DataFrame concatenation
-                try:
-                    if not hasattr(self.model, 'truck_results_df') or self.model.truck_results_df is None:
-                         self.model.truck_results_df = pd.DataFrame()
-                    self.model.truck_results_df = pd.concat([self.model.truck_results_df, final_info_df], ignore_index=True, sort=False) 
-                except Exception: # nested_e_safe:
-                    pass # Log if necessary, but prevent crash
+            # dict로 결과 수집 후 리스트에 추가 (pd.concat 제거)
+            final_info = self.get_info()
+            if hasattr(self.model, 'truck_results_list'):
+                self.model.truck_results_list.append(final_info)
             
-            # Clean up truck's internal data to free memory
-            if hasattr(self, 'path_df'): 
-                del self.path_df
-                self.path_df = None
+            # 내부 데이터 정리
             if hasattr(self, 'actual_stop_events'): 
                 del self.actual_stop_events
                 self.actual_stop_events = []
             
-            # Request removal from the main simulation model
+            # 시뮬레이터에서 제거 요청
             if self.model and hasattr(self.model, 'remove_truck'):
                 self.model.remove_truck(self) 
         
